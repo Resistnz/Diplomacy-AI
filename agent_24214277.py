@@ -1,6 +1,8 @@
-import time
+import random
+import networkx as nx
 import timeout_decorator
 from agent_baselines import Agent
+import pprint
 
 class StudentAgent(Agent):
     '''
@@ -15,14 +17,41 @@ class StudentAgent(Agent):
     def __init__(self, agent_name='Give a nickname'):
         super().__init__(agent_name)
 
-        '''Implement your agent here.'''
+        self.map_graph_army = None
+        self.map_graph_navy = None
 
     @timeout_decorator.timeout(1)
     def new_game(self, game, power_name):
         self.game = game
         self.power_name = power_name
 
-        '''Implement your agent here.'''
+        self.build_map_graphs()
+
+    @timeout_decorator.timeout(1)
+    def build_map_graphs(self): # Grabbed from the greedy agent implementation
+        if not self.game:
+            raise Exception('Game Not Initialised. Cannot Build Map Graphs.')
+
+        self.map_graph_army = nx.Graph()
+        self.map_graph_navy = nx.Graph()
+
+        locations = list(self.game.map.loc_type.keys()) # locations with '/' are not real provinces
+
+        for i in locations:
+            if self.game.map.loc_type[i] in ['LAND', 'COAST']:
+                self.map_graph_army.add_node(i.upper())
+            if self.game.map.loc_type[i] in ['WATER', 'COAST']:
+                self.map_graph_navy.add_node(i.upper())
+
+        locations = [i.upper() for i in locations]
+
+        for i in locations:
+            for j in locations:
+                if self.game.map.abuts('A', i, '-', j):
+                    self.map_graph_army.add_edge(i, j)
+                if self.game.map.abuts('F', i, '-', j):
+                    self.map_graph_navy.add_edge(i, j)
+
 
     @timeout_decorator.timeout(1) # This is only for updating the game engine and other states if any. Do not implement heavy stratergy here.
     def update_game(self, all_power_orders):
@@ -32,11 +61,13 @@ class StudentAgent(Agent):
         self.game.process()
 
     @timeout_decorator.timeout(1)
+    def eval(self): # Return a quick estimate of the board state in the favour of the player
+        return 0
+
+    @timeout_decorator.timeout(1)
     def get_actions(self):
 
         '''Implement your agent here.'''
-        
-        return [] 
 
         '''
         Return a list of orders. Each order is a string, with specific format. For the format, read the game rule and game engine documentation.
@@ -70,3 +101,32 @@ class StudentAgent(Agent):
         # You can re-use the build_map_graphs function in the GreedyAgent to build the connection graph of the map if needed.
         
         '''
+
+        # Whats the game state
+        phase = self.game.get_current_phase()
+        year = phase[1:4]
+        season = phase[0]
+
+        # Get me my possible orders
+        all_possible_orders = self.game.get_all_possible_orders()
+        troop_locations = self.game.get_orderable_locations(self.power_name)
+
+        valid_orders = [all_possible_orders[location] for location in troop_locations]
+        flat = [x for sublist in valid_orders for x in sublist] # Flatten the list
+        valid_orders = flat
+        
+        # Where the opps at
+        #enemyTroops = 
+
+        print(f"The current phase is {phase}")
+
+        print("Troop locations:")
+        pprint.pprint(troop_locations)
+
+        print("Valid orders for the agent:")
+        pprint.pprint(valid_orders)
+
+        quit()
+
+        return None
+    
