@@ -1,4 +1,5 @@
 import random
+import time
 import networkx as nx
 import timeout_decorator
 from agent_baselines import Agent
@@ -53,16 +54,54 @@ class StudentAgent(Agent):
                     self.map_graph_navy.add_edge(i, j)
 
 
-    @timeout_decorator.timeout(1) # This is only for updating the game engine and other states if any. Do not implement heavy stratergy here.
+    @timeout_decorator.timeout(1) # This is only for updating the game engine and other states if any. Do not implement heavy strategy here.
     def update_game(self, all_power_orders):
         # do not make changes to the following codes
         for power_name in all_power_orders.keys():
             self.game.set_orders(power_name, all_power_orders[power_name])
         self.game.process()
 
+    # Return a quick estimate of the board state in the favour of the agent
     @timeout_decorator.timeout(1)
-    def eval(self): # Return a quick estimate of the board state in the favour of the player
-        return 0
+    def eval(self):
+        # Using dictionary to weight different properties
+        propertyWeightings = {
+            "our_centres": 10,
+            "enemy_centres_lead": 5
+        }
+
+        # Initialise properties
+        stateProperties = {}
+        for property in propertyWeightings:
+            stateProperties[property] = 0
+
+        # How many supply centres we own
+        centres = self.game.get_centers()
+        stateProperties["our_centres"] = centres[self.power_name]
+
+        # We win yay
+        if centres[self.power_name] >= 18: return float('inf')
+
+        # Check if anyone has won/is close based on supply centres
+        for power, scs in centres:
+            if power == self.power_name: continue
+
+            # Terminal state
+            if scs >= 18:
+                return float('-inf')
+
+            # If someone is ahead of us that is not good
+            scsLead = scs  - centres[self.power_name]
+            if scsLead > 3:
+                stateProperties["enemy_centres_lead"] += scsLead 
+        
+        # Calculate the weighted evaluation
+        evaluation = 0
+
+        for property, value in stateProperties.items():
+            evaluation += value * propertyWeightings[property]
+
+        return evaluation
 
     @timeout_decorator.timeout(1)
     def get_actions(self):
@@ -104,7 +143,7 @@ class StudentAgent(Agent):
 
         # Whats the game state
         phase = self.game.get_current_phase()
-        year = phase[1:4]
+        year = phase[1:5]
         season = phase[0]
 
         # Get me my possible orders
