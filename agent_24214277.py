@@ -1,9 +1,11 @@
 import random
-import time
 import networkx as nx
 import timeout_decorator
 from agent_baselines import Agent
 import pprint
+from game import copy_game
+from itertools import product
+from tqdm import tqdm
 
 class StudentAgent(Agent):
     '''
@@ -63,7 +65,7 @@ class StudentAgent(Agent):
 
     # Return a quick estimate of the board state in the favour of the agent
     @timeout_decorator.timeout(1)
-    def eval(self):
+    def eval(power_name, game):
         # Using dictionary to weight different properties
         propertyWeightings = {
             "our_centres": 10,
@@ -76,25 +78,25 @@ class StudentAgent(Agent):
             stateProperties[property] = 0
 
         # How many supply centres we own
-        centres = self.game.get_centers()
-        stateProperties["our_centres"] = centres[self.power_name]
+        centres = game.get_centers()
+        stateProperties["our_centres"] = len(centres[power_name])
 
         # We win yay
-        if centres[self.power_name] >= 18: return float('inf')
+        if len(centres[power_name]) >= 18: return float('inf')
 
         # Check if anyone has won/is close based on supply centres
-        for power, scs in centres:
-            if power == self.power_name: continue
+        for power, scs in centres.items():
+            if power == power_name: continue
 
             # Terminal state
-            if scs >= 18:
+            if len(scs) >= 18:
                 return float('-inf')
 
             # If someone is ahead of us that is not good
-            scsLead = scs  - centres[self.power_name]
+            scsLead = len(scs) - len(centres[power_name])
             if scsLead > 3:
                 stateProperties["enemy_centres_lead"] += scsLead 
-        
+
         # Calculate the weighted evaluation
         evaluation = 0
 
@@ -102,6 +104,15 @@ class StudentAgent(Agent):
             evaluation += value * propertyWeightings[property]
 
         return evaluation
+    
+    @timeout_decorator.timeout(1)
+    def get_random_orders(game, power_name):
+        possible_orders = game.get_all_possible_orders()
+        
+        orderable_locations = game.get_orderable_locations(power_name)
+        power_orders = [random.choice(possible_orders[loc]) for loc in orderable_locations if possible_orders[loc]]
+        
+        return power_orders 
 
     @timeout_decorator.timeout(1)
     def get_actions(self):
@@ -152,20 +163,40 @@ class StudentAgent(Agent):
 
         valid_orders = [all_possible_orders[location] for location in troop_locations]
         flat = [x for sublist in valid_orders for x in sublist] # Flatten the list
-        valid_orders = flat
-        
-        # Where the opps at
-        #enemyTroops = 
+        #valid_orders = flat
 
-        print(f"The current phase is {phase}")
+        # Make a random order set for each other agent
+        orders = {}
+        for power in self.game.powers.keys():
+            if power == self.power_name: continue
 
-        print("Troop locations:")
-        pprint.pprint(troop_locations)
+            orders[power] = StudentAgent.get_random_orders(self.game, power)
 
-        print("Valid orders for the agent:")
-        pprint.pprint(valid_orders)
+        # Find all sets of orders using cartesian product of the valid orders
+        order_sets = [list(x) for x in product(*valid_orders)]
 
-        quit()
+        # Search 1 move ahead and get the best eval
+        best_eval = float('-inf')
+        best_order_set = []
 
-        return None
-    
+        with tqdm(total=len(order_sets)) as pbar:
+            for order_set in order_sets:
+                newGame = copy_game(self.game)
+
+                orders[self.power_name] = order_set
+
+                for p in self.game.powers.keys():
+                    #print(orders[p])
+                    newGame.set_orders(p, orders[p])
+
+                evaluation = StudentAgent.eval(self.power_name, newGame)
+
+                if evaluation > best_eval:
+                    best_eval = evaluation
+                    best_order_set = order_set
+
+                pbar.update(1)
+
+        print(f"Finished phase {phase}")
+
+        return best_order_set
