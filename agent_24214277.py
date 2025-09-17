@@ -6,6 +6,9 @@ import pprint
 from game import copy_game
 from itertools import product
 from tqdm import tqdm
+import time
+import heapq
+from functools import cache
 
 class StudentAgent(Agent):
     '''
@@ -16,8 +19,18 @@ class StudentAgent(Agent):
     You can add/override attributes and methods as needed.
     '''
 
+    class MTCSNode:
+        def __init__(self, order_set):
+            # Orders for all powers
+            self.order_set = order_set
+
+            self.visit_count = 0
+            self.evaluation = 0
+
+            self.children = []
+
     @timeout_decorator.timeout(1)
-    def __init__(self, agent_name='Give a nickname'):
+    def __init__(self, agent_name='wining bot'):
         super().__init__(agent_name)
 
         self.map_graph_army = None
@@ -113,43 +126,127 @@ class StudentAgent(Agent):
         power_orders = [random.choice(possible_orders[loc]) for loc in orderable_locations if possible_orders[loc]]
         
         return power_orders 
+    
+    # Generate order sets for all powers
+    @timeout_decorator.timeout(1)
+    def generate_joint_order_sets(self):
+        # Get some info about the game state
+        all_possible_orders = self.game.get_all_possible_orders()
+        troop_locations = self.game.get_orderable_locations(self.power_name)
+
+        valid_orders = [all_possible_orders[location] for location in troop_locations]
+
+        neighbours = self.game.map.loc_abut
+
+        # Check which centres are unoccupied
+        occupied_centres = self.game.get_centers()
+        unoccupied_centres = set(self.game.map.scs)
+
+        for power, centres in occupied_centres.items():
+            for centre in centres:
+                unoccupied_centres.remove(centre)
+
+        # Check which locations are able to move into those centres
+        locations_next_to_unoccupied_scs = set()
+
+        for sc in unoccupied_centres:
+            for neighbour in neighbours[sc]:
+                locations_next_to_unoccupied_scs.add(neighbour)
+
+        # Same for occupied ones
+        locations_next_to_occupied_scs = set()
+
+        for sc in occupied_centres:
+            for neighbour in neighbours[sc]:
+                locations_next_to_occupied_scs.add(neighbour)
+
+        # Evaluate how good each order might be 
+        order_qualities = []
+        for order in valid_orders:
+            evaluation = 0
+
+            # Evaluate it individually
+            unit_type = order[0]
+            unit_location = order[2:5]
+
+            if unit_location in locations_next_to_unoccupied_scs:
+                evaluation = 10
+
+            if unit_location in locations_next_to_occupied_scs and 
+
+            heapq.heapppush(order_qualities, (evaluation, order))
+
+        # Get only the top good ones
+        CANDIDATE_ORDER_COUNT = 3
+        candidate_orders = []
+        for i in range(CANDIDATE_ORDER_COUNT):
+            order, _ = heapq.heapppop(order_qualities)
+            
+            candidate_orders.append(order)
+
+        # Make 3 random order sets for each enemy agent
+        enemy_order_sets = {}
+
+        for power in self.game.powers.keys():
+            if power == self.power_name: continue
+
+            enemy_order_sets[power] = []
+
+            for i in range(3):
+                enemy_order_sets[power].append(StudentAgent.get_random_orders(self.game, power))
+
+        # Find all sets of our orders using cartesian product
+        prospective_order_sets = [list(x) for x in product(*candidate_orders)]
+        our_order_sets = []
+
+        # Pruning
+        for order_set in prospective_order_sets:
+            is_good = True
+
+            # Go through individual orders
+            for order in order_set:
+                if len(order) < 13: continue
+
+                isSupport = order[6] == "S"
+
+                # Make sure the support makes sense
+                if isSupport:
+                    if len(order) > 14: # Must be supporting a move
+                        # Make sure that move exists in the other
+                        if order[8:19] not in order_set: 
+                            is_good = False
+                            break
+
+            if is_good:
+                our_order_sets.append(order_set)
+
+        print(f"Pruned {len(prospective_order_sets) - len(our_order_sets)} orders. Taking the top ")
+        #pprint.pprint(our_order_sets)
+
+        all_power_order_sets = enemy_order_sets
+        all_power_order_sets[self.power_name] = our_order_sets
+
+        keys = all_power_order_sets.keys()
+        value_lists = all_power_order_sets.values()
+        
+        # Generate cartesian product of all orders
+        combinations = product(*value_lists)
+        
+        # Create all combinations of orders using cartesian product again
+        joint_order_sets : list[dict] = [dict(zip(keys, combo)) for combo in combinations]
+
+        return joint_order_sets
 
     @timeout_decorator.timeout(1)
     def get_actions(self):
-
-        '''Implement your agent here.'''
-
         '''
-        Return a list of orders. Each order is a string, with specific format. For the format, read the game rule and game engine documentation.
-        
-        Expected format:
-        A LON H                  # Army at LON holds
-        F IRI - MAO              # Fleet at IRI moves to MAO (and attack)
-        A WAL S F LON            # Army at WAL supports Fleet at LON (and hold)
-        F NTH S A EDI - YOR      # Fleet at NTH supports Army at EDI to move to YOR
-        F NWG C A NWY - EDI      # Fleet at NWG convoys Army at NWY to EDI
-        A NWY - EDI VIA          # Army at NWY moves to EDI via convoy
-        A WAL R LON              # Army at WAL retreats to LON
-        A LON D                  # Disband Army at LON
-        A LON B                  # Build Army at LON
-        F EDI B                  # Build Fleet at EDI
-
-        Note: If an invalid order is sent to the engine, it will be accepted but with a result of 'void' (no effect).
-        Note: For a 'support' action, two orders are needed, one for the supporter and one for the supportee. (Same for 'convoy')
-        Note: For each unit, if no order is given, it will 'hold' by default.
-
-        Useful Functions:
-        
-        # This is a dict of all the possible orders for each unit at each location (for all powers).
-        possible_orders = self.game.get_all_possible_orders()
-
-        # This is a list of all orderable locations for the power you control.
-        orderable_locations = self.game.get_orderable_locations(self.power_name)
-    
-        # Combining these two, you can have the full action space for the power you control.
-
-        # You can re-use the build_map_graphs function in the GreedyAgent to build the connection graph of the map if needed.
-        
+            Generate own orders
+            Generate enemy orders
+                - Sample based on heuristic (hold stable, advance to border, defend etc.)
+                - Limit to some amount
+            Prune orders
+            Join to get entire order set
+            Eval each one
         '''
 
         # Whats the game state
@@ -157,45 +254,29 @@ class StudentAgent(Agent):
         year = phase[1:5]
         season = phase[0]
 
-        # Get me my possible orders
-        all_possible_orders = self.game.get_all_possible_orders()
-        troop_locations = self.game.get_orderable_locations(self.power_name)
-
-        valid_orders = [all_possible_orders[location] for location in troop_locations]
-        flat = [x for sublist in valid_orders for x in sublist] # Flatten the list
-        #valid_orders = flat
-
-        # Make a random order set for each other agent
-        orders = {}
-        for power in self.game.powers.keys():
-            if power == self.power_name: continue
-
-            orders[power] = StudentAgent.get_random_orders(self.game, power)
-
-        # Find all sets of orders using cartesian product of the valid orders
-        order_sets = [list(x) for x in product(*valid_orders)]
+        # Get all possible orders
+        now = time.time_ns()
+        order_sets = self.generate_joint_order_sets()
+        finish = time.time_ns()
+        print(f"Took {round((finish - now)/1000000)}ms.")
 
         # Search 1 move ahead and get the best eval
         best_eval = float('-inf')
-        best_order_set = []
+        best_order_set : dict = {}
 
-        with tqdm(total=len(order_sets)) as pbar:
-            for order_set in order_sets:
-                newGame = copy_game(self.game)
+        print(f"Checking {len(order_sets)} states")
 
-                orders[self.power_name] = order_set
+        for order_set in order_sets:
+            newGame = copy_game(self.game)
 
-                for p in self.game.powers.keys():
-                    #print(orders[p])
-                    newGame.set_orders(p, orders[p])
+            for p in self.game.powers.keys():
+                newGame.set_orders(p, order_set[p])
 
-                evaluation = StudentAgent.eval(self.power_name, newGame)
+            evaluation = StudentAgent.eval(self.power_name, newGame)
 
-                if evaluation > best_eval:
-                    best_eval = evaluation
-                    best_order_set = order_set
-
-                pbar.update(1)
+            if evaluation > best_eval:
+                best_eval = evaluation
+                best_order_set = order_set[self.power_name]
 
         print(f"Finished phase {phase}")
 
