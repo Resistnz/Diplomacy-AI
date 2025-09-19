@@ -9,6 +9,8 @@ from tqdm import tqdm
 import time
 import heapq
 from functools import cache
+from enum import Enum
+from collections import defaultdict
 
 class StudentAgent(Agent):
     '''
@@ -28,6 +30,14 @@ class StudentAgent(Agent):
             self.evaluation = 0
 
             self.children = []
+
+    class OrderType(Enum):
+        HOLD = 1
+        MOVE = 2
+        SUPPORT = 3
+        CONVOY = 4
+        BUILD = 5
+        DISBAND = 6
 
     @timeout_decorator.timeout(1)
     def __init__(self, agent_name='wining bot'):
@@ -135,30 +145,52 @@ class StudentAgent(Agent):
         troop_locations = self.game.get_orderable_locations(self.power_name)
 
         valid_orders = [all_possible_orders[location] for location in troop_locations]
+        valid_orders = [order for location_orders in valid_orders for order in location_orders]
+
+        #print(valid_orders)
 
         neighbours = self.game.map.loc_abut
+
+        # Make them uppercase cause this is stupid
+        for loc in list(neighbours.keys()):
+            neighbours[loc] = [x.upper() for x in neighbours[loc]]
+            neighbours[loc.upper()] = neighbours[loc]
 
         # Check which centres are unoccupied
         occupied_centres = self.game.get_centers()
         unoccupied_centres = set(self.game.map.scs)
+        our_centres = set(self.game.get_centers())
+
+        #pprint.pprint(occupied_centres)
+        #pprint.pprint(unoccupied_centres)
+
+        # Get where different units are
+        unit_locations = {}
+        for power, units in self.game.get_units().items():
+            for unit in units:
+                unit_locations[unit[2:5]] = (power, unit)
 
         for power, centres in occupied_centres.items():
             for centre in centres:
                 unoccupied_centres.remove(centre)
 
-        # Check which locations are able to move into those centres
-        locations_next_to_unoccupied_scs = set()
+        # How many opps at each location
+        opp_counts = defaultdict(int)
+        support_counts = defaultdict(int)
 
-        for sc in unoccupied_centres:
-            for neighbour in neighbours[sc]:
-                locations_next_to_unoccupied_scs.add(neighbour)
+        for loc in troop_locations:
+            opp_count = 0
+            support_count = 0
 
-        # Same for occupied ones
-        locations_next_to_occupied_scs = set()
+            for neighbour in neighbours[loc]:
+                if neighbour not in unit_locations: continue
 
-        for sc in occupied_centres:
-            for neighbour in neighbours[sc]:
-                locations_next_to_occupied_scs.add(neighbour)
+                troop_owner = unit_locations[neighbour][0]
+                if troop_owner != self.power_name: opp_count += 1
+                else: support_count += 1
+
+                opp_counts[loc] = opp_count
+                support_counts[loc] = support_count
 
         # Evaluate how good each order might be 
         order_qualities = []
@@ -167,22 +199,61 @@ class StudentAgent(Agent):
 
             # Evaluate it individually
             unit_type = order[0]
-            unit_location = order[2:5]
+            unit_location = str(order[2:5])
 
-            if unit_location in locations_next_to_unoccupied_scs:
-                evaluation = 10
+            #print(unit_location)
+           # print(order)
 
-            if unit_location in locations_next_to_occupied_scs and 
+            order_type = StudentAgent.OrderType.HOLD
+            target_location = None
 
-            heapq.heapppush(order_qualities, (evaluation, order))
+            if order[6] == "S":
+                order_type = StudentAgent.OrderType.SUPPORT
+            elif order[6] == "-":
+                order_type = StudentAgent.OrderType.MOVE
+                target_location = str(order[8:11])
+            elif order[6] == "C":
+                order_type = StudentAgent.OrderType.CONVOY
+            elif order[6] == "D":
+                order_type = StudentAgent.OrderType.DISBAND
+            elif order[6] == "B":
+                order_type = StudentAgent.OrderType.BUILD
+
+            # If we got support we are happy
+            if support_counts[unit_location] > 0:
+                evaluation += 5 * support_counts[unit_location]
+
+            # If we defending a centre
+            if unit_location in our_centres and order_type == StudentAgent.OrderType.HOLD:
+                evaluation = 5
+
+                # Check if we got opps
+
+            # If we can grab a free centre
+            if order_type == StudentAgent.OrderType.MOVE and target_location in unoccupied_centres:
+                evaluation += 10
+
+                # Check if theres opps around
+                if opp_counts[target_location] == 0:
+                    evaluation += 50
+
+            # Supports are pretty good
+            #if order_type == StudentAgent.OrderType.SUPPORT:
+
+
+            #if unit_location in locations_next_to_occupied_scs and 
+
+            heapq.heappush(order_qualities, (evaluation, order))
 
         # Get only the top good ones
-        CANDIDATE_ORDER_COUNT = 3
+        CANDIDATE_ORDER_COUNT = 5
         candidate_orders = []
         for i in range(CANDIDATE_ORDER_COUNT):
-            order, _ = heapq.heapppop(order_qualities)
+            _, order = heapq.heappop(order_qualities)
             
             candidate_orders.append(order)
+
+        print(candidate_orders)
 
         # Make 3 random order sets for each enemy agent
         enemy_order_sets = {}
