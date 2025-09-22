@@ -140,6 +140,7 @@ class StudentAgent(Agent):
                         return False
 
         # TODO: Make sure we aren't self-bouncing
+        return True
 
     # Turn the order into an CandidateAction
     def parse_order(order):
@@ -161,31 +162,31 @@ class StudentAgent(Agent):
 
         if len(s) > 6:
             if s[6] == "H":
-                candidate.order_type = ActionType.HOLD
+                candidate.action_type = ActionType.HOLD
             elif s[6] == "S":
-                candidate.order_type = ActionType.SUPPORT
+                candidate.action_type = ActionType.SUPPORT
                 candidate.supported_unit = str(s[10:13])
 
                 if len(s) > 16:
                     candidate.support_target = str(s[16:19])
 
             elif s[6] == "-":
-                candidate.order_type = ActionType.MOVE
+                candidate.action_type = ActionType.MOVE
                 candidate.target = str(s[8:11])
 
                 if len(s) == 15:
                     candidate.via_convoy = True
             elif s[6] == "C":
-                candidate.order_type = ActionType.CONVOY
+                candidate.action_type = ActionType.CONVOY
                 candidate.supported_unit = str(s[10:13])
                 candidate.support_target = str(s[16:19])
 
             elif s[6] == "D":
-                candidate.order_type = ActionType.DISBAND
+                candidate.action_type = ActionType.DISBAND
             elif s[6] == "B":
-                candidate.order_type = ActionType.BUILD
+                candidate.action_type = ActionType.BUILD
             elif s[6] == "R":
-                candidate.order_type = ActionType.RETREAT
+                candidate.action_type = ActionType.RETREAT
             else:
                 raise ValueError(s)
         else:
@@ -224,6 +225,8 @@ class StudentAgent(Agent):
                     score += 5
             else:
                 score -= 5  # Supporting no one
+
+        #print(action.action_type, action.order_string, score)
 
         return score
     
@@ -289,6 +292,9 @@ class StudentAgent(Agent):
 
         valid_orders = [candidate_actions[x] for x in unit_locations]
 
+        #print("\nValid orders:")
+        #pprint.pprint(valid_orders)
+
         order_sets = []
         for order_set in product(*valid_orders):
             o = list(order_set)
@@ -300,6 +306,8 @@ class StudentAgent(Agent):
             order_sets.append((score, o))
 
         order_sets.sort(key=lambda x: x[0], reverse=True)
+
+        #pprint.pprint(order_sets)
 
         return [x for _, x in order_sets]
     
@@ -346,6 +354,9 @@ class StudentAgent(Agent):
         for unit in our_units:
             candidate_actions[unit] = StudentAgent.generate_candidates(CANDIDATE_ORDER_COUNT, self.game, unit, our_centres, enemy_centres, unit_locations, neighbours)
 
+       # print(f"Our candidate actions are: ")
+        #pprint.pprint(candidate_actions)
+
         # Get the interaction graph, and get the connected components
         graph = StudentAgent.build_interaction_graph(our_units, candidate_actions, neighbours)
 
@@ -353,16 +364,26 @@ class StudentAgent(Agent):
         for comp in nx.connected_components(graph):
             components.append(comp)
 
+        #print("\nComponents of the interaction graph:")
+       # pprint.pprint(components)
+
         # Generate order sets for each component separately
         component_order_sets = []
 
         for units in components:
             order_sets = StudentAgent.get_product(candidate_actions, units)
+            #print(f"Order sets:")
+            #pprint.pprint(order_sets)
 
             order_lists = [[action.order_string for action in order_set] for order_set in order_sets]
-
+            #print(f"\n Order as lists:")
+            #pprint.pprint(order_lists)
+            #print()
             # TODO: If we got nothin
             component_order_sets.append(order_lists)
+
+        #print("\nComponent order sets:")
+        #pprint.pprint(component_order_sets)
 
         # Cartesian product over each component
         full_orders = []
@@ -376,6 +397,7 @@ class StudentAgent(Agent):
         full_orders.sort(key=lambda o: len(o), reverse=True)
 
         print(f"Our orders are: {full_orders}")
+        #quit()
 
         return full_orders
     
@@ -407,8 +429,8 @@ class StudentAgent(Agent):
         # Create all combinations of orders using cartesian product again
         joint_order_sets : list[dict] = [dict(zip(keys, combo)) for combo in combinations]
 
-        print(f"Generated {len(joint_order_sets)} orders.\n")
-        quit()
+        #print(f"Generated {len(joint_order_sets)} order sets.\n")
+        #quit()
 
         return joint_order_sets
 
@@ -434,13 +456,14 @@ class StudentAgent(Agent):
         now = time.time_ns()
         order_sets = self.generate_joint_order_sets()
         finish = time.time_ns()
-        print(f"Took {round((finish - now)/1000000)}ms.")
+        print(f"Took {round((finish - now)/1000000)}ms.\n")
 
         # Search 1 move ahead and get the best eval
         best_eval = float('-inf')
         best_order_set : dict = {}
 
-        print(f"Checking {len(order_sets)} states")
+        print(f"Checking {len(order_sets)} states:")
+        now = time.time_ns()
 
         with tqdm(total=len(order_sets)) as pbar:
             for order_set in order_sets:
@@ -459,6 +482,9 @@ class StudentAgent(Agent):
 
                 pbar.update(1)
 
-        print(f"Finished phase {phase}")
+        finish = time.time_ns()
+        print(f"Took {round((finish - now)/1000000)}ms.\n")
+        print(f"Finished phase {phase}\n.")
+        #quit()
 
         return best_order_set
