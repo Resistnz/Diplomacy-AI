@@ -22,6 +22,7 @@ class ActionType(Enum):
     BUILD = 5
     DISBAND = 6
     RETREAT = 7
+    WAIVE = 8
 
 # Used to generate some candidate actions to search through
 @dataclass
@@ -118,9 +119,13 @@ class StudentAgent(Agent):
         # TODO: Enemies
         return graph
 
-    def is_valid_order_set(order_set):
+    def is_valid_order_set(self, order_set):
         actions_by_unit = {a.unit_location: a for a in order_set} # Dictionary comprehension go crazy
         # For example just gives {"PAR": "A PAR H"}
+
+        if len(order_set) == 0: return False
+
+        build_count = 0
 
         # Make sure actions make sense
         for action in order_set:
@@ -138,6 +143,12 @@ class StudentAgent(Agent):
                         return False
                     if supported_action.target != action.support_target: # Where he goin
                         return False
+            
+            elif action.action_type == ActionType.BUILD:
+                build_count += 1
+
+        # Make sure we build the right amount
+        if build_count != self.amount_to_build: return False
 
         # TODO: Make sure we aren't self-bouncing
         return True
@@ -159,6 +170,10 @@ class StudentAgent(Agent):
         # F NTH S A EDI - YOR
         # F IRI - MAO VIA
         # 0123456789012345678
+
+        if s == "WAIVE":
+            candidate.action_type = ActionType.WAIVE
+            return candidate
 
         if len(s) > 6:
             if s[5] == "/": # Fix coasts
@@ -211,6 +226,8 @@ class StudentAgent(Agent):
         self.all_centres = set(self.game.map.scs)
         self.our_centres = set(self.game.get_centers(self.power_name))
 
+        #print(f"Our centres are: {self.our_centres}")
+
         self.enemy_centres = self.occupied_centres - self.our_centres
         self.unoccupied_or_enemy_centres = self.unoccupied_centres.union(self.enemy_centres)
 
@@ -237,6 +254,8 @@ class StudentAgent(Agent):
             if power == self.power_name: continue
             self.enemy_units.extend(units)
 
+        #pprint.pprint(F"Our units: {self.our_units}")
+
         # How many opps at each location
         self.opp_counts = defaultdict(int)
         self.support_counts = defaultdict(int)
@@ -256,6 +275,12 @@ class StudentAgent(Agent):
                 self.support_counts[loc] = support_count
 
         self.season = self.game.phase[0]
+        self.amount_to_build = 0
+
+        self.expanding = True
+
+        if self.season == "W":
+            self.amount_to_build = len(self.our_centres) - len(self.our_units)
 
         # Distance from any node to any other
         provinces = list(self.game.map.loc_abut.keys())
@@ -275,7 +300,7 @@ class StudentAgent(Agent):
     # Super quick and basic eval of a candidate action
     def evaluate_candidate_action(self, action : CandidateAction):
         def season():
-            if self.season == "S": return 0.5
+            if self.season == "S": return 0.8
             if self.season == "F": return 1.5
 
             return 1
@@ -288,18 +313,31 @@ class StudentAgent(Agent):
         support_target = action.support_target
         supported_unit = action.supported_unit
 
-        if action_type == ActionType.MOVE:
+        if action_type == ActionType.BUILD:
+            return 100
+        
+        elif action_type == ActionType.WAIVE:
+            return -100
+        
+        elif action_type == ActionType.RETREAT:
+            return 0
+
+        elif action_type == ActionType.MOVE:
             score += 2 # Encourage moving a lil bit
 
-            if target in self.unoccupied_centres: score += 20 # New centre
-            if target in self.enemy_centres: score += 12 # Enemy centre
-            if target in self.our_centres: score += 5 # Defending our centre
+            if target in self.unoccupied_centres: score += 20 * season() # New centre
+            elif target in self.enemy_centres: score += 15 * season() # Enemy centre
+            elif target in self.our_centres: score += 5 # Defending our centre
 
             if unit_location in self.our_centres: # Leaving it empty
                 if self.opp_counts[unit_location] > 0: score -= 10 # Opps around
 
+            # Attacking an enemy
+            if self.all_unit_locations.get(target, (False, False))[0] != self.power_name:
+                if self.support_counts[target] > 1: score += 10
+
             # Check if we can win the fight
-            score += (self.support_counts[target] - self.opp_counts[target] - 1) * 6
+            #score += (self.support_counts[target] - self.opp_counts[target] - 1) * 6
 
             # Check the proximity to other supply centres
             proximity = 0
@@ -309,46 +347,35 @@ class StudentAgent(Agent):
                 if d < 99:
                     proximity += max(0, 5 - d)
 
-            score += proximity
+            score += proximity//3
 
-            # Compensate for seasons
-            score *= season()
+            if self.expanding:
+                proximity = 0
+                for sc in self.our_centres:
+                    d = self.distance_cache[target].get(sc, 99)
+
+                    if d < 99:
+                        proximity += max(0, 2 - d)
+
+                score -= proximity//5
 
         elif action_type == ActionType.HOLD:
             if unit_location in self.our_centres:  # Defending our centre
-                if self.opp_counts[unit_location] == 0: score = -10 # No opps around
+                if self.opp_counts[unit_location] == 0: score = -10 # No opps around, just move
                 else: score = 20
 
                 score *= season()
+            else: # Grabbing a new centre is always good
+                score += 20
 
         elif action_type == ActionType.SUPPORT:
-            if supported_unit and self.all_unit_locations.get(support_target, (False, False))[0] == self.power_name: # Supporting our own guy
+            score += 10
+
+            if supported_unit and self.all_unit_locations.get(supported_unit, (False, False))[0] == self.power_name: # Supporting our own guy
                 if support_target and support_target in self.unoccupied_or_enemy_centres: # Supporting a move into new centre 
-                    score += 15
+                    score += 20
                 else:
                     score += 5
-            else:
-                score -= 5  # Supporting enemy
-
-        # if action.action_type == ActionType.MOVE:
-        #     if action.target in self.unoccupied_centres: # Grabbing free centre
-        #         score += 40 
-        #     if action.target in self.enemy_centres: # Attacking enemy centre
-        #         score += 20
-        #     score += 5
-        # elif action.action_type == ActionType.HOLD:
-        #     if action.unit_location in self.our_centres: # Defending centre
-        #         score += 10 
-        # elif action.action_type == ActionType.SUPPORT:
-        #     if action.supported_unit and action.supported_unit in self.unit_locations:
-        #         if action.support_target and action.support_target in self.enemy_centres | self.unoccupied_centres: # Supporting a move into enemy 
-        #             score += 15
-        #         else:
-        #             score += 5
-        #     else:
-        #         score -= 5  # Supporting no one
-
-        # #print(action.action_type, action.order_string, score)
 
         return score
     
@@ -409,7 +436,7 @@ class StudentAgent(Agent):
 
         return evaluation
     
-    def get_product(candidate_actions, unit_locations):
+    def get_product(self, candidate_actions, unit_locations):
         # TODO: Beam search for when many units involved
 
         valid_orders = [candidate_actions[x] for x in unit_locations]
@@ -421,7 +448,7 @@ class StudentAgent(Agent):
         for order_set in product(*valid_orders):
             o = list(order_set)
 
-            if not StudentAgent.is_valid_order_set(o): continue
+            if not self.is_valid_order_set(o): continue
 
             # Rank them
             score = sum(action.score for action in o)
@@ -452,27 +479,43 @@ class StudentAgent(Agent):
         for unit in self.our_units:
             candidate_actions[unit] = self.generate_candidates(CANDIDATE_ORDER_COUNT, unit)
 
-       # print(f"Our candidate actions are: ")
-        #pprint.pprint(candidate_actions)
+        # If we in a build phase
+        if self.season == "W":
+            for sc in self.our_centres:
+                candidate_actions[sc] = self.generate_candidates(CANDIDATE_ORDER_COUNT, sc)
+
+        print(f"Our candidate actions are: ")
+        pprint.pprint(candidate_actions)
 
         # Get the interaction graph, and get the connected components
         graph = StudentAgent.build_interaction_graph(self.our_units, candidate_actions, self.neighbours)
+
+        if self.season == "W":
+            graph = StudentAgent.build_interaction_graph(list(self.our_centres), candidate_actions, self.neighbours)
 
         components = []
         for comp in nx.connected_components(graph):
             components.append(comp)
 
         #print("\nComponents of the interaction graph:")
-       # pprint.pprint(components)
+        #pprint.pprint(components)
 
         # Generate order sets for each component separately
         component_order_sets = []
 
         for units in components:
-            order_sets = StudentAgent.get_product(candidate_actions, units)
+           # print(f"Checking component: {units}")
+            order_sets = self.get_product(candidate_actions, units)
+
+            #print(f"Resulting order sets: {order_sets}")
+
             order_lists = [[action.order_string for action in order_set] for order_set in order_sets]
 
+            if len(order_lists) == 0: continue
+
             component_order_sets.append(order_lists)
+
+        #print(f"Final order sets: {component_order_sets}\n\n")
 
         # Cartesian product over each component
         full_orders = []
@@ -484,6 +527,8 @@ class StudentAgent(Agent):
             full_orders.append(combined)
         
         full_orders.sort(key=lambda o: len(o), reverse=True)
+
+        #print(full_orders)
 
         #print(f"Our orders are: {full_orders}")
         #quit()
@@ -541,7 +586,7 @@ class StudentAgent(Agent):
         season = phase[0]
 
         # Get all possible orders
-        print(f"Getting actions for phase {phase}")
+        #print(f"Getting actions for phase {phase}")
         now = time.time_ns()
         order_sets = self.generate_joint_order_sets()
         finish = time.time_ns()
@@ -569,11 +614,13 @@ class StudentAgent(Agent):
                     best_eval = evaluation
                     best_order_set = order_set[self.power_name]
 
-                pbar.update(1)
+                    pbar.update(1)
 
         finish = time.time_ns()
         print(f"Took {round((finish - now)/1000000)}ms.\n")
-        print(f"Finished phase {phase}\n.")
+        print(f"Finished phase {phase} with orders {best_order_set}\n")
+
+        #if season == "W": quit()
         #quit()
 
         return best_order_set
