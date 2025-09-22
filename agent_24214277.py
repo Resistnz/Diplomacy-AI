@@ -10,7 +10,7 @@ import time
 import heapq
 from functools import cache
 from enum import Enum
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -161,6 +161,9 @@ class StudentAgent(Agent):
         # 0123456789012345678
 
         if len(s) > 6:
+            if s[5] == "/": # Fix coasts
+                s = s[:5] + s[8:]
+
             if s[6] == "H":
                 candidate.action_type = ActionType.HOLD
             elif s[6] == "S":
@@ -200,46 +203,165 @@ class StudentAgent(Agent):
             self.game.set_orders(power_name, all_power_orders[power_name])
         self.game.process()
 
+    def calculate_map_properties(self):
+        # Centres
+        self.occupied_centres = {centre for centres in self.game.get_centers().values() for centre in centres}
+        self.unoccupied_centres = set(self.game.map.scs) - self.occupied_centres
+
+        self.all_centres = set(self.game.map.scs)
+        self.our_centres = set(self.game.get_centers(self.power_name))
+
+        self.enemy_centres = self.occupied_centres - self.our_centres
+        self.unoccupied_or_enemy_centres = self.unoccupied_centres.union(self.enemy_centres)
+
+        self.all_unit_locations = {}
+        for power, units in self.game.get_units().items():
+            for unit in units:
+                self.all_unit_locations[unit[2:5]] = (power, unit)
+
+        # Neighbours
+        self.neighbours = self.game.map.loc_abut
+
+        # Make them uppercase cause this is stupid
+        for loc in list(self.neighbours.keys()):
+            self.neighbours[loc] = [x.upper() for x in self.neighbours[loc]]
+            self.neighbours[loc.upper()] = self.neighbours[loc]
+
+        # Units
+        self.our_units = self.game.get_units(self.power_name)
+        self.our_units = [x[2:5] for x in self.our_units] # Strip the "A " or "F " at the start
+
+        self.all_units = self.game.get_units()
+        self.enemy_units = []
+        for power, units in self.all_units.items():
+            if power == self.power_name: continue
+            self.enemy_units.extend(units)
+
+        # How many opps at each location
+        self.opp_counts = defaultdict(int)
+        self.support_counts = defaultdict(int)
+
+        for loc in self.game.map.locs:
+            opp_count = 0
+            support_count = 0
+
+            for neighbour in self.neighbours[loc]:
+                if neighbour not in self.all_unit_locations: continue
+
+                troop_owner = self.all_unit_locations[neighbour][0]
+                if troop_owner != self.power_name: opp_count += 1
+                else: support_count += 1
+
+                self.opp_counts[loc] = opp_count
+                self.support_counts[loc] = support_count
+
+        self.season = self.game.phase[0]
+
+        # Distance from any node to any other
+        provinces = list(self.game.map.loc_abut.keys())
+        self.distance_cache = {p: {} for p in provinces}
+
+        for start in provinces:
+            queue = deque([(start, 0)])
+            seen = {start}
+            while queue:
+                current, d = queue.popleft()
+                self.distance_cache[start][current] = d
+                for neigh in self.game.map.loc_abut[current]:
+                    if neigh not in seen:
+                        seen.add(neigh)
+                        queue.append((neigh, d + 1))
+
     # Super quick and basic eval of a candidate action
-    def evaluate_candidate_action(action, game, our_centres, enemy_centres, unit_locations, neighbours):
+    def evaluate_candidate_action(self, action : CandidateAction):
+        def season():
+            if self.season == "S": return 0.5
+            if self.season == "F": return 1.5
+
+            return 1
+
         score = 0
 
-        occupied_centres = {centre for centres in game.get_centers().values() for centre in centres}
-        unoccupied_centres = set(game.map.scs) - occupied_centres
+        target = action.target
+        unit_location = action.unit_location
+        action_type = action.action_type
+        support_target = action.support_target
+        supported_unit = action.supported_unit
 
-        if action.action_type == ActionType.MOVE:
-            if action.target in unoccupied_centres: # Grabbing free centre
-                score += 40 
-            if action.target in enemy_centres: # Attacking enemy centre
-                score += 20
-            if action.target in neighbours.get(action.unit_location, []): # Not moving too far away
-                score += 2
-        elif action.action_type == ActionType.HOLD:
-            if action.unit_location in our_centres: # Defending centre
-                score += 10 
-        elif action.action_type == ActionType.SUPPORT:
-            if action.supported_unit and action.supported_unit in unit_locations:
-                if action.support_target and action.support_target in enemy_centres | unoccupied_centres: # Supporting a move into enemy 
+        if action_type == ActionType.MOVE:
+            score += 2 # Encourage moving a lil bit
+
+            if target in self.unoccupied_centres: score += 20 # New centre
+            if target in self.enemy_centres: score += 12 # Enemy centre
+            if target in self.our_centres: score += 5 # Defending our centre
+
+            if unit_location in self.our_centres: # Leaving it empty
+                if self.opp_counts[unit_location] > 0: score -= 10 # Opps around
+
+            # Check if we can win the fight
+            score += (self.support_counts[target] - self.opp_counts[target] - 1) * 6
+
+            # Check the proximity to other supply centres
+            proximity = 0
+            for sc in self.unoccupied_or_enemy_centres:
+                d = self.distance_cache[target].get(sc, 99)
+
+                if d < 99:
+                    proximity += max(0, 5 - d)
+
+            score += proximity
+
+            # Compensate for seasons
+            score *= season()
+
+        elif action_type == ActionType.HOLD:
+            if unit_location in self.our_centres:  # Defending our centre
+                if self.opp_counts[unit_location] == 0: score = -10 # No opps around
+                else: score = 20
+
+                score *= season()
+
+        elif action_type == ActionType.SUPPORT:
+            if supported_unit and self.all_unit_locations.get(support_target, (False, False))[0] == self.power_name: # Supporting our own guy
+                if support_target and support_target in self.unoccupied_or_enemy_centres: # Supporting a move into new centre 
                     score += 15
                 else:
                     score += 5
             else:
-                score -= 5  # Supporting no one
+                score -= 5  # Supporting enemy
 
-        #print(action.action_type, action.order_string, score)
+        # if action.action_type == ActionType.MOVE:
+        #     if action.target in self.unoccupied_centres: # Grabbing free centre
+        #         score += 40 
+        #     if action.target in self.enemy_centres: # Attacking enemy centre
+        #         score += 20
+        #     score += 5
+        # elif action.action_type == ActionType.HOLD:
+        #     if action.unit_location in self.our_centres: # Defending centre
+        #         score += 10 
+        # elif action.action_type == ActionType.SUPPORT:
+        #     if action.supported_unit and action.supported_unit in self.unit_locations:
+        #         if action.support_target and action.support_target in self.enemy_centres | self.unoccupied_centres: # Supporting a move into enemy 
+        #             score += 15
+        #         else:
+        #             score += 5
+        #     else:
+        #         score -= 5  # Supporting no one
+
+        # #print(action.action_type, action.order_string, score)
 
         return score
     
-    def generate_candidates(amount, game, unit_location, our_centres, enemy_centres, unit_locations, neighbours):
-        all_orders = game.get_all_possible_orders()
+    def generate_candidates(self, amount, unit_location):
+        all_orders = self.game.get_all_possible_orders()
         unit_orders = all_orders.get(unit_location, [])
 
         # Evaluate all the orders individually
         candidates = []
         for order in unit_orders:
-            c = StudentAgent.parse_order(order)
-            c.score = StudentAgent.evaluate_candidate_action(c, game, our_centres, enemy_centres, unit_locations, neighbours)
-            candidates.append(c)
+            action = StudentAgent.parse_order(order)
+            action.score = self.evaluate_candidate_action(action)
+            candidates.append(action)
         
         # Return the best ones
         candidates.sort(key=lambda x: x.score, reverse=True)
@@ -321,44 +443,20 @@ class StudentAgent(Agent):
         return power_orders 
     
     def generate_our_orders(self):
-        our_units = self.game.get_units(self.power_name)
-        our_units = [x[2:5] for x in our_units] # Strip the "A " or "F " at the start
-
-        neighbours = self.game.map.loc_abut
-
-        # Make them uppercase cause this is stupid
-        for loc in list(neighbours.keys()):
-            neighbours[loc] = [x.upper() for x in neighbours[loc]]
-            neighbours[loc.upper()] = neighbours[loc]
-
-        # Check which centres are unoccupied
-        occupied_centres = {centre for centres in self.game.get_centers().values() for centre in centres}
-        unoccupied_centres = set(self.game.map.scs)
-
-        all_centres = set(unoccupied_centres)
-        our_centres = set(self.game.get_centers(self.power_name))
-        enemy_centres = all_centres.difference(our_centres)
-
-        for centre in occupied_centres:
-            unoccupied_centres.remove(centre)
-
-        unit_locations = {}
-        for power, units in self.game.get_units().items():
-            for unit in units:
-                unit_locations[unit[2:5]] = (power, unit)
-
+        self.calculate_map_properties()
+    
         # Generate our candidate actions
         CANDIDATE_ORDER_COUNT = 3
-
         candidate_actions = {}
-        for unit in our_units:
-            candidate_actions[unit] = StudentAgent.generate_candidates(CANDIDATE_ORDER_COUNT, self.game, unit, our_centres, enemy_centres, unit_locations, neighbours)
+
+        for unit in self.our_units:
+            candidate_actions[unit] = self.generate_candidates(CANDIDATE_ORDER_COUNT, unit)
 
        # print(f"Our candidate actions are: ")
         #pprint.pprint(candidate_actions)
 
         # Get the interaction graph, and get the connected components
-        graph = StudentAgent.build_interaction_graph(our_units, candidate_actions, neighbours)
+        graph = StudentAgent.build_interaction_graph(self.our_units, candidate_actions, self.neighbours)
 
         components = []
         for comp in nx.connected_components(graph):
@@ -372,18 +470,9 @@ class StudentAgent(Agent):
 
         for units in components:
             order_sets = StudentAgent.get_product(candidate_actions, units)
-            #print(f"Order sets:")
-            #pprint.pprint(order_sets)
-
             order_lists = [[action.order_string for action in order_set] for order_set in order_sets]
-            #print(f"\n Order as lists:")
-            #pprint.pprint(order_lists)
-            #print()
-            # TODO: If we got nothin
-            component_order_sets.append(order_lists)
 
-        #print("\nComponent order sets:")
-        #pprint.pprint(component_order_sets)
+            component_order_sets.append(order_lists)
 
         # Cartesian product over each component
         full_orders = []
@@ -396,7 +485,7 @@ class StudentAgent(Agent):
         
         full_orders.sort(key=lambda o: len(o), reverse=True)
 
-        print(f"Our orders are: {full_orders}")
+        #print(f"Our orders are: {full_orders}")
         #quit()
 
         return full_orders
