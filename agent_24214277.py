@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
-class OrderType(Enum):
+class ActionType(Enum):
     HOLD = 1
     MOVE = 2
     SUPPORT = 3
@@ -30,7 +30,7 @@ class CandidateAction():
     unit_type: str
     order_string: str
 
-    order_type: OrderType = OrderType.HOLD
+    action_type: ActionType = ActionType.HOLD
     target: Optional[str] = None # HOLD will have no target
 
     supported_unit: Optional[str] = None 
@@ -80,6 +80,67 @@ class StudentAgent(Agent):
                 if self.game.map.abuts('F', i, '-', j):
                     self.map_graph_navy.add_edge(i, j)
 
+    def build_interaction_graph(our_unit_locations, candidates, neighbours):
+        # Nodes are units and edges are if actions interact, like same target/supports etc.
+        graph = nx.Graph()
+
+        for unit in our_unit_locations:
+            graph.add_node(unit)
+
+        # Join units if nay pair of them interact
+        # Lots of loops but not too many units so its ok
+        for i, unit in enumerate(our_unit_locations):
+            for other_unit in our_unit_locations[i+1:]:
+                interacting = False
+
+                # Get all of their candidate actions
+                for action in candidates.get(unit, []):
+                    for other_action in candidates.get(other_unit, []):
+                        if action.target == other_action.target: # Gonna bounce
+                            interacting = True; break # Python is so cool for this
+                        
+                        # Supporting eachother
+                        if action.action_type == ActionType.SUPPORT and action.supported_unit == other_unit:
+                            interacting = True; break
+                        if other_action.action_type == ActionType.SUPPORT and other_action.supported_unit == unit:
+                            interacting = True; break
+                        
+                        # Gonna start some beef (are next to eachother)
+                        target1 = action.target or action.unit_location
+                        target2 = other_action.target or other_action.unit_location
+
+                        if target1 in neighbours.get(target2, []) or target2 in neighbours.get(target1, []):
+                            interacting = True; break
+                        
+                if interacting:
+                    graph.add_edge(unit, other_unit)
+
+        # TODO: Enemies
+        return graph
+
+    def is_valid_order_set(order_set):
+        actions_by_unit = {a.unit_location: a for a in order_set} # Dictionary comprehension go crazy
+        # For example just gives {"PAR": "A PAR H"}
+
+        # Make sure actions make sense
+        for action in order_set:
+            if action.action_type == ActionType.SUPPORT:
+                # Supportting a hold
+                if action.support_target is None:
+                    if action.supported_unit not in actions_by_unit: return False # This guy dont exist
+                # We got a move
+                else:
+                    supported_action = actions_by_unit.get(action.supported_unit) # Action of the supported guy
+
+                    if supported_action is None: # Bro does not exist
+                        return False
+                    if supported_action.action_type != ActionType.MOVE: 
+                        return False
+                    if supported_action.target != action.support_target: # Where he goin
+                        return False
+
+        # TODO: Make sure we aren't self-bouncing
+
     # Turn the order into an CandidateAction
     def parse_order(order):
         s = order.upper() # Hate that I have to do this but some come in as lowercase
@@ -100,31 +161,31 @@ class StudentAgent(Agent):
 
         if len(s) > 6:
             if s[6] == "H":
-                candidate.order_type = OrderType.HOLD
+                candidate.order_type = ActionType.HOLD
             elif s[6] == "S":
-                candidate.order_type = OrderType.SUPPORT
+                candidate.order_type = ActionType.SUPPORT
                 candidate.supported_unit = str(s[10:13])
 
                 if len(s) > 16:
                     candidate.support_target = str(s[16:19])
 
             elif s[6] == "-":
-                candidate.order_type = OrderType.MOVE
+                candidate.order_type = ActionType.MOVE
                 candidate.target = str(s[8:11])
 
                 if len(s) == 15:
                     candidate.via_convoy = True
             elif s[6] == "C":
-                candidate.order_type = OrderType.CONVOY
+                candidate.order_type = ActionType.CONVOY
                 candidate.supported_unit = str(s[10:13])
                 candidate.support_target = str(s[16:19])
 
             elif s[6] == "D":
-                candidate.order_type = OrderType.DISBAND
+                candidate.order_type = ActionType.DISBAND
             elif s[6] == "B":
-                candidate.order_type = OrderType.BUILD
+                candidate.order_type = ActionType.BUILD
             elif s[6] == "R":
-                candidate.order_type = OrderType.RETREAT
+                candidate.order_type = ActionType.RETREAT
             else:
                 raise ValueError(s)
         else:
@@ -132,12 +193,54 @@ class StudentAgent(Agent):
 
         return candidate
 
-    @timeout_decorator.timeout(1) # This is only for updating the game engine and other states if any. Do not implement heavy strategy here.
+    @timeout_decorator.timeout(1)
     def update_game(self, all_power_orders):
-        # do not make changes to the following codes
         for power_name in all_power_orders.keys():
             self.game.set_orders(power_name, all_power_orders[power_name])
         self.game.process()
+
+    # Super quick and basic eval of a candidate action
+    def evaluate_candidate_action(action, game, our_centres, enemy_centres, unit_locations, neighbours):
+        score = 0
+
+        occupied_centres = {centre for centres in game.get_centers().values() for centre in centres}
+        unoccupied_centres = set(game.map.scs) - occupied_centres
+
+        if action.action_type == ActionType.MOVE:
+            if action.target in unoccupied_centres: # Grabbing free centre
+                score += 40 
+            if action.target in enemy_centres: # Attacking enemy centre
+                score += 20
+            if action.target in neighbours.get(action.unit_location, []): # Not moving too far away
+                score += 2
+        elif action.action_type == ActionType.HOLD:
+            if action.unit_location in our_centres: # Defending centre
+                score += 10 
+        elif action.action_type == ActionType.SUPPORT:
+            if action.supported_unit and action.supported_unit in unit_locations:
+                if action.support_target and action.support_target in enemy_centres | unoccupied_centres: # Supporting a move into enemy 
+                    score += 15
+                else:
+                    score += 5
+            else:
+                score -= 5  # Supporting no one
+
+        return score
+    
+    def generate_candidates(amount, game, unit_location, our_centres, enemy_centres, unit_locations, neighbours):
+        all_orders = game.get_all_possible_orders()
+        unit_orders = all_orders.get(unit_location, [])
+
+        # Evaluate all the orders individually
+        candidates = []
+        for order in unit_orders:
+            c = StudentAgent.parse_order(order)
+            c.score = StudentAgent.evaluate_candidate_action(c, game, our_centres, enemy_centres, unit_locations, neighbours)
+            candidates.append(c)
+        
+        # Return the best ones
+        candidates.sort(key=lambda x: x.score, reverse=True)
+        return candidates[:amount]
 
     # Return a quick estimate of the board state in the favour of the agent
     @timeout_decorator.timeout(1)
@@ -181,6 +284,25 @@ class StudentAgent(Agent):
 
         return evaluation
     
+    def get_product(candidate_actions, unit_locations):
+        # TODO: Beam search for when many units involved
+
+        valid_orders = [candidate_actions[x] for x in unit_locations]
+
+        order_sets = []
+        for order_set in product(*valid_orders):
+            o = list(order_set)
+
+            if not StudentAgent.is_valid_order_set(o): continue
+
+            # Rank them
+            score = sum(action.score for action in o)
+            order_sets.append((score, o))
+
+        order_sets.sort(key=lambda x: x[0], reverse=True)
+
+        return [x for _, x in order_sets]
+    
     @timeout_decorator.timeout(1)
     def get_random_orders(game, power_name):
         possible_orders = game.get_all_possible_orders()
@@ -189,23 +311,10 @@ class StudentAgent(Agent):
         power_orders = [random.choice(possible_orders[loc]) for loc in orderable_locations if possible_orders[loc]]
         
         return power_orders 
-        #return []
     
-    # Generate order sets for all powers
-    @timeout_decorator.timeout(1)
-    def generate_joint_order_sets(self, season):
-        # Get some info about the game state
-        all_possible_orders = self.game.get_all_possible_orders()
-        troop_locations = self.game.get_orderable_locations(self.power_name)
-
-        valid_orders = [all_possible_orders[location] for location in troop_locations]
-
-        #print(valid_orders)
-
-        num_troops = len(valid_orders)
-        #valid_orders = [order for location_orders in valid_orders for order in location_orders]
-
-        #print(valid_orders)
+    def generate_our_orders(self):
+        our_units = self.game.get_units(self.power_name)
+        our_units = [x[2:5] for x in our_units] # Strip the "A " or "F " at the start
 
         neighbours = self.game.map.loc_abut
 
@@ -225,156 +334,56 @@ class StudentAgent(Agent):
         for centre in occupied_centres:
             unoccupied_centres.remove(centre)
 
-        #pprint.pprint(occupied_centres)
-        #pprint.pprint(unoccupied_centres)
-
-        # Get where different units are
         unit_locations = {}
         for power, units in self.game.get_units().items():
             for unit in units:
                 unit_locations[unit[2:5]] = (power, unit)
 
-        
-
-        # How many opps at each location
-        opp_counts = defaultdict(int)
-        support_counts = defaultdict(int)
-
-        for loc in troop_locations:
-            opp_count = 0
-            support_count = 0
-
-            for neighbour in neighbours[loc]:
-                if neighbour not in unit_locations: continue
-
-                troop_owner = unit_locations[neighbour][0]
-                if troop_owner != self.power_name: opp_count += 1
-                else: support_count += 1
-
-                opp_counts[loc] = opp_count
-                support_counts[loc] = support_count
-
-        # Evaluate how good each individual order might be 
-        order_qualities = [list() for _ in range(num_troops)]
-        for i in range(num_troops):
-            # Get shortest parth to each centre
-            paths = nx.shortest_path(self.map_graph_army, source=loc)
-            closest_center = None
-            closest_distance = 1000
-            for center in enemy_centres:
-                if center not in paths.keys():
-                    continue
-                dis = len(paths[center])
-                if dis < closest_distance:
-                    closest_distance = dis
-                    closest_center = center
-
-            for order in valid_orders[i]:
-                evaluation = 0
-
-                # Evaluate it individually
-                unit_type = order[0]
-                unit_location = str(order[2:5])
-
-                #print(unit_location)
-            # print(order)
-
-                order_type = StudentAgent.OrderType.HOLD
-                target_location = None
-                supportee = None
-
-                if len(order) == 15: continue # We ain't convoying yet
-
-                if len(order) > 6:
-                    if order[6] == "S":
-                        order_type = StudentAgent.OrderType.SUPPORT
-                        supportee = str(order[10:13])
-
-                        if len(order) > 16:
-                            target_location = str(order[16:19])
-
-                    elif order[6] == "-":
-                        order_type = StudentAgent.OrderType.MOVE
-                        target_location = str(order[8:11])
-                    elif order[6] == "C":
-                        order_type = StudentAgent.OrderType.CONVOY
-                        continue
-                    elif order[6] == "D":
-                        order_type = StudentAgent.OrderType.DISBAND
-                        #evaluation = -100
-                        #continue
-                    elif order[6] == "B":
-                        order_type = StudentAgent.OrderType.BUILD
-                        #evaluation = 100
-                        #continue
-
-                # If we got support we are happy
-                if support_counts[unit_location] > 0:
-                    evaluation += 5 * support_counts[unit_location]
-
-                # If we defending a centre
-                if unit_location in our_centres and order_type == StudentAgent.OrderType.HOLD:
-                    # Check if we got opps
-                    if opp_counts[unit_location] == 0:
-                        evaluation = -10
-                    else:
-                        evaluation = 40
-
-                if order_type == StudentAgent.OrderType.MOVE:
-                    # If we can grab a free centre
-                    if target_location in unoccupied_centres:
-                        evaluation += 10
-
-                        # No opps is good
-                        if opp_counts[target_location] == 0:
-                            evaluation += 50
-                        # Probably not good if theres hella opps
-                        if opp_counts[target_location] >= 2:
-                            evaluation -= 5
-
-                    # Might be good to move to the close guy
-                    if closest_center is not None:
-                        if len(paths[closest_center]) < 2: continue
-                        target = paths[closest_center][1]
-
-                        if target_location == target: 
-                            evaluation += 20
-
-                # Supports are alright
-                if order_type == StudentAgent.OrderType.SUPPORT:
-                    # Supporting move into empty spot
-                    if target_location not in unit_locations:
-                        if opp_counts[target_location] == 0: evaluation = -10
-                        elif opp_counts[target_location] == 1: evaluation = min(30, evaluation * 2)
-                        else: evaluation += 10
-                    else:
-                        if opp_counts[target_location] == 0: evaluation = min(30, evaluation * 2)
-                        elif opp_counts[target_location] == 1: 
-                            if support_counts[target_location] < 2: evaluation = -10
-                            else: evaluation *= min(20, evaluation * 1.5)
-                        else: evaluation -= 10
-
-                heapq.heappush(order_qualities[i], (-evaluation, order))
-
-        print(order_qualities)
-        
-        # Get only the top 3 orders per unit
+        # Generate our candidate actions
         CANDIDATE_ORDER_COUNT = 3
-        candidate_orders = [list() for _ in range(num_troops)]
-        for j in range(num_troops):
-            for i in range(CANDIDATE_ORDER_COUNT):
-                if len(order_qualities) <= j: break
-                if len(order_qualities[j]) == 0: continue
-                evaluation, order = heapq.heappop(order_qualities[j])
 
-                print(-evaluation, order)
-                
-                candidate_orders[j].append(order)
+        candidate_actions = {}
+        for unit in our_units:
+            candidate_actions[unit] = StudentAgent.generate_candidates(CANDIDATE_ORDER_COUNT, self.game, unit, our_centres, enemy_centres, unit_locations, neighbours)
 
-        print(candidate_orders)
+        # Get the interaction graph, and get the connected components
+        graph = StudentAgent.build_interaction_graph(our_units, candidate_actions, neighbours)
+
+        components = []
+        for comp in nx.connected_components(graph):
+            components.append(comp)
+
+        # Generate order sets for each component separately
+        component_order_sets = []
+
+        for units in components:
+            order_sets = StudentAgent.get_product(candidate_actions, units)
+
+            order_lists = [[action.order_string for action in order_set] for order_set in order_sets]
+
+            # TODO: If we got nothin
+            component_order_sets.append(order_lists)
+
+        # Cartesian product over each component
+        full_orders = []
+        for prod_tuple in product(*component_order_sets):
+            # flatten list of lists
+            combined = []
+            for chunk in prod_tuple:
+                combined.extend(chunk)
+            full_orders.append(combined)
         
+        full_orders.sort(key=lambda o: len(o), reverse=True)
 
-        # Make 3 random order sets for each enemy agent
+        print(f"Our orders are: {full_orders}")
+
+        return full_orders
+    
+    # Generate order sets for all powers
+    @timeout_decorator.timeout(1)
+    def generate_joint_order_sets(self):
+        our_order_sets = self.generate_our_orders()
+
         enemy_order_sets = {}
         ENEMY_ORDER_SET_COUNT = 1
 
@@ -385,39 +394,6 @@ class StudentAgent(Agent):
 
             for i in range(ENEMY_ORDER_SET_COUNT):
                 enemy_order_sets[power].append(StudentAgent.get_random_orders(self.game, power))
-
-        # Find all sets of our orders using cartesian product
-        prospective_order_sets = [list(x) for x in product(*candidate_orders)]
-        our_order_sets = []
-
-        #print("Prospective order sets:")
-        #pprint.pprint(prospective_order_sets)
-        #print()
-        #quit()
-
-        # Pruning
-        for order_set in prospective_order_sets:
-            is_good = True
-
-            # Go through individual orders
-            for order in order_set:
-                if len(order) < 13: continue
-
-                isSupport = order[6] == "S"
-
-                # Make sure the support makes sense
-                if isSupport:
-                    if len(order) > 14: # Must be supporting a move
-                        # Make sure that move exists in the other
-                        if order[8:19] not in order_set: 
-                            is_good = False
-                            print(f"Pruned order set {order_set}")
-                            break
-
-            if is_good:
-                our_order_sets.append(order_set)
-
-        print(f"Pruned {len(prospective_order_sets) - len(our_order_sets)} orders.")
 
         all_power_order_sets = enemy_order_sets
         all_power_order_sets[self.power_name] = our_order_sets
@@ -432,9 +408,7 @@ class StudentAgent(Agent):
         joint_order_sets : list[dict] = [dict(zip(keys, combo)) for combo in combinations]
 
         print(f"Generated {len(joint_order_sets)} orders.\n")
-
-        print(f"We have {len(troop_locations)} units.")
-        #quit()
+        quit()
 
         return joint_order_sets
 
@@ -458,7 +432,7 @@ class StudentAgent(Agent):
         # Get all possible orders
         print(f"Getting actions for phase {phase}")
         now = time.time_ns()
-        order_sets = self.generate_joint_order_sets(season)
+        order_sets = self.generate_joint_order_sets()
         finish = time.time_ns()
         print(f"Took {round((finish - now)/1000000)}ms.")
 
@@ -488,7 +462,3 @@ class StudentAgent(Agent):
         print(f"Finished phase {phase}")
 
         return best_order_set
-    
-print(StudentAgent.parse_order("F NWG C A NWY - EDI"))
-print(StudentAgent.parse_order("A NTH S A EDI - YOR"))
-print(StudentAgent.parse_order("A LON H"))
