@@ -11,36 +11,34 @@ import heapq
 from functools import cache
 from enum import Enum
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import Optional
-
-class OrderType(Enum):
-    HOLD = 1
-    MOVE = 2
-    SUPPORT = 3
-    CONVOY = 4
-    BUILD = 5
-    DISBAND = 6
-    RETREAT = 7
-
-# Used to generate some candidate actions to search through
-@dataclass
-class CandidateAction():
-    unit_location: str 
-    unit_type: str
-    order_string: str
-
-    order_type: OrderType = OrderType.HOLD
-    target: Optional[str] = None # HOLD will have no target
-
-    supported_unit: Optional[str] = None 
-    support_target: Optional[str] = None # The location the supported unit is going to
-
-    via_convoy: bool = False # Movin via convoy
-
-    score: float = 0 
 
 class StudentAgent(Agent):
+    '''
+    Implement your agent here. 
+
+    Please read the abstract Agent class from baseline_agents.py first.
+    
+    You can add/override attributes and methods as needed.
+    '''
+
+    # class MTCSNode:
+    #     def __init__(self, order_set):
+    #         # Orders for all powers
+    #         self.order_set = order_set
+
+    #         self.visit_count = 0
+    #         self.evaluation = 0
+
+    #         self.children = []
+
+    class OrderType(Enum):
+        HOLD = 1
+        MOVE = 2
+        SUPPORT = 3
+        CONVOY = 4
+        BUILD = 5
+        DISBAND = 6
+
     @timeout_decorator.timeout(1)
     def __init__(self, agent_name='wining bot'):
         super().__init__(agent_name)
@@ -80,57 +78,6 @@ class StudentAgent(Agent):
                 if self.game.map.abuts('F', i, '-', j):
                     self.map_graph_navy.add_edge(i, j)
 
-    # Turn the order into an CandidateAction
-    def parse_order(order):
-        s = order.upper() # Hate that I have to do this but some come in as lowercase
-
-        unit_type = s[0]
-        unit_location = s[2:5]
-        order_string = s
-
-        candidate = CandidateAction(
-            unit_location = unit_location,
-            unit_type = unit_type,
-            order_string = order_string
-        )
-
-        # F NTH S A EDI - YOR
-        # F IRI - MAO VIA
-        # 0123456789012345678
-
-        if len(s) > 6:
-            if s[6] == "H":
-                candidate.order_type = OrderType.HOLD
-            elif s[6] == "S":
-                candidate.order_type = OrderType.SUPPORT
-                candidate.supported_unit = str(s[10:13])
-
-                if len(s) > 16:
-                    candidate.support_target = str(s[16:19])
-
-            elif s[6] == "-":
-                candidate.order_type = OrderType.MOVE
-                candidate.target = str(s[8:11])
-
-                if len(s) == 15:
-                    candidate.via_convoy = True
-            elif s[6] == "C":
-                candidate.order_type = OrderType.CONVOY
-                candidate.supported_unit = str(s[10:13])
-                candidate.support_target = str(s[16:19])
-
-            elif s[6] == "D":
-                candidate.order_type = OrderType.DISBAND
-            elif s[6] == "B":
-                candidate.order_type = OrderType.BUILD
-            elif s[6] == "R":
-                candidate.order_type = OrderType.RETREAT
-            else:
-                raise ValueError(s)
-        else:
-            raise ValueError(s)
-
-        return candidate
 
     @timeout_decorator.timeout(1) # This is only for updating the game engine and other states if any. Do not implement heavy strategy here.
     def update_game(self, all_power_orders):
@@ -488,7 +435,3 @@ class StudentAgent(Agent):
         print(f"Finished phase {phase}")
 
         return best_order_set
-    
-print(StudentAgent.parse_order("F NWG C A NWY - EDI"))
-print(StudentAgent.parse_order("A NTH S A EDI - YOR"))
-print(StudentAgent.parse_order("A LON H"))

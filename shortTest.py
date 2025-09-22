@@ -38,6 +38,7 @@ Expected format:
     F NTH S A EDI - YOR      # Fleet at NTH supports Army at EDI to move to YOR
     F NWG C A NWY - EDI      # Fleet at NWG convoys Army at NWY to EDI
     A NWY - EDI VIA          # Army at NWY moves to EDI via convoy
+    
     A WAL R LON              # Army at WAL retreats to LON
     A LON D                  # Disband Army at LON
     A LON B                  # Build Army at LON
