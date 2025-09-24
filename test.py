@@ -68,5 +68,5 @@ if __name__ == "__main__":
     print('Evaluating Scenario 1 ...')
     experiment(player_agent=StudentAgent, opponent_agent_pool=[StaticAgent], repeat_nums=10)
 
-    print('Evaluating Scenario 2 ...')
-    experiment(player_agent=StudentAgent, opponent_agent_pool=[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent], repeat_nums=10)
+    #print('Evaluating Scenario 2 ...')
+    #experiment(player_agent=StudentAgent, opponent_agent_pool=[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent], repeat_nums=10)

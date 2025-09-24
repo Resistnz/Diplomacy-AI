@@ -29,7 +29,6 @@ if __name__ == "__main__":
     print("Game Finished!\n")
     for power in results:
         print(f"{power} ended with {results[power]} supply centres - {wins[power]}" + (' (AI Agent)' if power == AI_AGENT else ''))
-
 '''
 Expected format:
     A LON H                  # Army at LON holds
