@@ -2,7 +2,7 @@ from test import *
 import cProfile
 
 AI_AGENT = "ITALY"
-OPPONENT_POOL = [StaticAgent] #[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
+OPPONENT_POOL = [GreedyAgent] #[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
 
 if __name__ == "__main__":
     agents = {}
@@ -17,12 +17,12 @@ if __name__ == "__main__":
             opponentAgent = random.choice(OPPONENT_POOL)
             agents[p] = opponentAgent()
 
-    #print("\nProfiling the simulation...")
-    #profiler = cProfile.Profile()
-    #profiler.enable()
+    # print("\nProfiling the simulation...")
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     results, _ = run_one_game(agents)
-    #profiler.disable()
-    #profiler.print_stats(sort='time')
+    # profiler.disable()
+    # profiler.print_stats(sort='time')
 
     scores, wins = scoring(results)
 
