@@ -4,7 +4,7 @@ from tqdm import tqdm
 from game import run_one_game
 from collections import defaultdict
 from agent_baselines import StaticAgent, RandomAgent, GreedyAgent, AttitudeAgent
-from agent_24214277 import StudentAgent
+from agent_24214277v3 import StudentAgent
 
 # This file provides examples for you to test the performance of your agents. The testing code may be different during the marking.
 
@@ -65,8 +65,8 @@ def experiment(player_agent, opponent_agent_pool, repeat_nums=10):
 
 if __name__ == "__main__":
 
-    print('Evaluating Scenario 1 ...')
-    experiment(player_agent=StudentAgent, opponent_agent_pool=[StaticAgent], repeat_nums=10)
+    #print('Evaluating Scenario 1 ...')
+    #experiment(player_agent=StudentAgent, opponent_agent_pool=[StaticAgent], repeat_nums=10)
 
-    #print('Evaluating Scenario 2 ...')
-    #experiment(player_agent=StudentAgent, opponent_agent_pool=[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent], repeat_nums=10)
+    print('Evaluating Scenario 2 ...')
+    experiment(player_agent=StudentAgent, opponent_agent_pool=[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent], repeat_nums=10)
