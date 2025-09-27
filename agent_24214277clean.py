@@ -110,24 +110,16 @@ class Game:
     def copy_game(game):
         return Game(
             adjacency=game.adjacency,
-            supply_centres_by_power={p: centres[:] for p, centres in game.supply_centres_by_power.items()},
+            supply_centres_by_power=defaultdict(list, {p: centres[:] for p, centres in game.supply_centres_by_power.items()}),
             units={p: lst[:] for p, lst in game.units_by_power.items()},
             phase=game.phase
         )
 
     def get_centers(self, power_name=None):
-        centres_by_power = defaultdict(list)
-        for location, owner in self.who_owns_supply_centres.items():
-            if owner:
-                centres_by_power[owner].append(location)
-
         if power_name:
-            return centres_by_power[power_name] 
+            return self.supply_centres_by_power[power_name] 
 
-        # Ensure every power is there even if it owns no centres
-        for p in self.units_by_power.keys():
-            centres_by_power.setdefault(p, [])
-        return defaultdict(list, centres_by_power)
+        return self.supply_centres_by_power
 
     def get_units(self):
         out = defaultdict(list)
@@ -233,7 +225,7 @@ class Game:
             for sc, owner in self.who_owns_supply_centres.items():
                 if owner:
                     new_scs_by_power[owner].append(sc)
-            self.supply_centres_by_power = dict(new_scs_by_power)
+            self.supply_centres_by_power = defaultdict(list, new_scs_by_power)
 
         orders_by_power = defaultdict(list)
         orders_by_location = defaultdict(list)
@@ -281,7 +273,6 @@ class Game:
         return [x[2:5] for x in self.units_by_power[power_name]]
 
 class StudentAgent(Agent):
-    @timeout_decorator.timeout(1)
     def __init__(self, agent_name='wining bot'):
         super().__init__(agent_name)
 
@@ -291,14 +282,14 @@ class StudentAgent(Agent):
         self.last_unit_position_by_power = defaultdict(list)
         self.hold_counts = defaultdict(int)
 
-    @timeout_decorator.timeout(1)
+        self.root = None
+
     def new_game(self, game, power_name):
         self.game = game
         self.power_name = power_name
 
         self.build_map_graphs()
 
-    @timeout_decorator.timeout(1)
     def build_map_graphs(self): # Grabbed from the greedy agent implementation
         if not self.game:
             raise Exception('Game Not Initialised. Cannot Build Map Graphs.')
@@ -323,8 +314,7 @@ class StudentAgent(Agent):
                 if self.game.map.abuts('F', i, '-', j):
                     self.map_graph_navy.add_edge(i, j)
 
-    @timeout_decorator.timeout(1)
-    def mcts_select_orders(self, top_order_sets, iterations, rollout_depth, cutoff_time):
+    def start_mcts(self, top_order_sets, rollout_depth):
         adjacency = self.game.map.loc_abut
         supply_centres_by_power = self.game.get_centers() 
         units = self.game.get_units()                     
@@ -332,47 +322,34 @@ class StudentAgent(Agent):
 
         # Initialize root game and node
         root_game = Game(adjacency, supply_centres_by_power, units, phase)
-        root = MCTSNode(root_game)
+        self.root = MCTSNode(root_game)
 
         # Seed root children with top joint order sets
         for joint_orders in top_order_sets:
             child_game = Game(adjacency, supply_centres_by_power, units, phase)
             child_game.resolve_orders(joint_orders)
-            child_node = MCTSNode(child_game, parent=root, action=joint_orders)
-            root.children.append(child_node)
+            child_node = MCTSNode(child_game, parent=self.root, action=joint_orders)
+            self.root.children.append(child_node)
 
         # Standard MCTS iterations
-        for _ in range(iterations):
-            if time.time_ns() >= cutoff_time:
-                break
-
-            node = self._mcts_selection(root)
+        # Will timeout automatically
+        while True:
+            node = self.mcts_selection(self.root)
             if node.visits == 0:
-                reward = self._mcts_rollout(node.game_state, depth=rollout_depth)
-                self._mcts_backpropagate(node, reward)
+                reward = self.mcts_rollout(node.game_state, depth=rollout_depth)
+                self.mcts_backpropagate(node, reward)
             else:
-                expanded = self._mcts_expand(node)
+                expanded = self.mcts_expand(node)
                 if expanded is not None:
-                    reward = self._mcts_rollout(expanded.game_state, depth=rollout_depth)
-                    self._mcts_backpropagate(expanded, reward)
+                    reward = self.mcts_rollout(expanded.game_state, depth=rollout_depth)
+                    self.mcts_backpropagate(expanded, reward)
 
-        # pick the most visited child of the root
-        if not root.children:
-            return []
-        best_node = root.best_child()
-        return best_node.action
-
-    @timeout_decorator.timeout(1)
-    def _mcts_selection(self, node):
-        """
-        Traverse the tree using UCB1 until we find a node to expand or rollout.
-        """
+    def mcts_selection(self, node):
         while node.children:
             node = max(node.children, key=lambda c: c.ucb_score())
         return node
 
-    @timeout_decorator.timeout(1)
-    def _mcts_expand(self, node):
+    def mcts_expand(self, node):
         # Clone the game apply orders for all powers
         new_game = node.game_state.copy_game()
         all_orders = {}
@@ -385,8 +362,7 @@ class StudentAgent(Agent):
         node.children.append(child)
         return child
 
-    @timeout_decorator.timeout(1)
-    def _mcts_rollout(self, game_state, depth):
+    def mcts_rollout(self, game_state, depth):
         rollout_game = game_state.copy_game()
         for _ in range(depth):
             # Add random orders for all powers
@@ -400,20 +376,14 @@ class StudentAgent(Agent):
         evaluation = self.eval(game_state)
         return evaluation  # crude but works; can combine with evaluate_partial_order_set
 
-    @timeout_decorator.timeout(1)
-    def _mcts_backpropagate(self, node, reward):
-        """
-        Propagate the rollout value up to the root.
-        """
+    def mcts_backpropagate(self, node, reward):
         while node is not None:
             node.visits += 1
             node.value += reward
             node = node.parent
 
-    @timeout_decorator.timeout(1)
     def is_valid_order_set(self, order_set):
         actions_by_unit = {a.unit_location: a for a in order_set} # Dictionary comprehension go crazy
-        # For example just gives {"PAR": "A PAR H"}
 
         if len(order_set) == 0: return False
 
@@ -434,8 +404,6 @@ class StudentAgent(Agent):
 
         for target in convoy_move_targets:
             if target not in convoy_targets:
-                #print([x.order_string for x in order_set])
-                #quit()
                 return False
             
         if build_count < min(len(order_set), self.amount_to_build): return False
@@ -443,7 +411,6 @@ class StudentAgent(Agent):
         return True
 
     # Turn the order into an CandidateAction
-    @timeout_decorator.timeout(1)
     def parse_order(order):
         s = order.upper() # Hate that I have to do this but some come in as lowercase
 
@@ -452,8 +419,6 @@ class StudentAgent(Agent):
         order_string = s
 
         candidate = CandidateAction(
-            #unit = Unit(unit_location, unit_type),
-
             unit_location = unit_location,
             unit_type = unit_type,
             order_string = order_string
@@ -505,13 +470,11 @@ class StudentAgent(Agent):
 
         return candidate
 
-    @timeout_decorator.timeout(1)
     def update_game(self, all_power_orders):
         for power_name in all_power_orders.keys():
             self.game.set_orders(power_name, all_power_orders[power_name])
         self.game.process()
 
-    @timeout_decorator.timeout(1)
     def calculate_map_properties(self):
         # Centres
         self.occupied_centres = {centre for centres in self.game.get_centers().values() for centre in centres}
@@ -642,7 +605,6 @@ class StudentAgent(Agent):
         self.locations_to_build_fleets = {"POR", "SPA", "NAP", "TUN", "BRE", "LON", "EDI", "LON", "SMY", "GRE", "ANK"}
         self.locations_to_convoy = {"LON", "WAL", "EDI", "LVR", "CLY", "YOR"}
 
-    @timeout_decorator.timeout(1)
     def distance_to_enemy(self, start_location):
         visited = set()
         queue = deque([(start_location, 0)])
@@ -661,7 +623,6 @@ class StudentAgent(Agent):
 
         return float('inf')
     
-    @timeout_decorator.timeout(1)
     def fast_action_evaluation(self, game : Game, action : CandidateAction, power_name):
         score = 0
 
@@ -698,7 +659,6 @@ class StudentAgent(Agent):
         return score
 
     # Evaluation of a candidate action for this power
-    @timeout_decorator.timeout(1)
     def evaluate_candidate_action(self, action : CandidateAction):
         def season():
             if self.season == "S": return 0.8
@@ -755,11 +715,8 @@ class StudentAgent(Agent):
             elif target in self.enemy_centres: score += 50 * season() # Enemy centre
 
             if unit_location in self.our_centres: # Leaving it empty
-                #print("In a centre")
                 if self.opp_counts[unit_location] > 0: 
-                    #print("got opps")
                     if target in self.unoccupied_or_enemy_centres:
-                        #print("grabbing new, is ok")
                         score -= 30 * season() 
                     else:
                         score -= 1000 # Opps around
@@ -808,7 +765,6 @@ class StudentAgent(Agent):
         elif action_type == ActionType.HOLD:
             if unit_location in self.our_centres:  # Defending our centre
                 if self.opp_counts[unit_location] == 0: score = -30 # No opps around, just move
-                #else: score = 30
 
                 score *= season()
             else: # Grabbing a new centre is always good
@@ -838,11 +794,10 @@ class StudentAgent(Agent):
                     score += 50
                 else:
                     score += 5
-        
-        #(action.order_string, score)
+
         return score
     
-    @timeout_decorator.timeout(1)
+    ##@timeout_decorator.timeout(1)
     def evaluate_partial_order_set(self, order_set):
         move_targets = set()
         support_target_counts = defaultdict(int)
@@ -873,7 +828,7 @@ class StudentAgent(Agent):
 
         return score
     
-    @timeout_decorator.timeout(1)
+    ##@timeout_decorator.timeout(1)
     def generate_candidates(self, amount, unit_location):
         all_orders = self.game.get_all_possible_orders()
         unit_orders = all_orders.get(unit_location, [])
@@ -912,7 +867,6 @@ class StudentAgent(Agent):
         return candidates[:amount]
 
     # Return a quick estimate of the board state in the favour of the agent
-    @timeout_decorator.timeout(1)
     def eval(self, game: Game):
         # Using dictionary to weight different properties
         propertyWeightings = {
@@ -961,58 +915,7 @@ class StudentAgent(Agent):
             evaluation += value * propertyWeightings[property]
 
         return evaluation
-    
-    @timeout_decorator.timeout(1)
-    # def synergy_bonus(self, action_list, new_action):
-    #     bonus = 0.0
-    #     penalty = 0.0
 
-    #     targets = set()
-
-    #     # Self bounce
-    #     if new_action.action_type == ActionType.MOVE:
-    #         for a in action_list:
-    #             if a.action_type == ActionType.MOVE:
-    #                 targets.add(a.target)
-
-    #                 if a.target == new_action.target:
-    #                     # Conflict: two units moving to the same place
-    #                     penalty -= 100
-    #             else:
-    #                 targets.add(a.unit_location)
-    #             if (a.action_type == ActionType.HOLD or a.action_type == ActionType.SUPPORT) and a.unit_location == new_action.target:
-    #                 penalty -= 100
-
-    #             if (a.action_type == ActionType.SUPPORT or a.action_type == ActionType.CONVOY) and a.supported_unit == new_action.unit_location and a.support_target == new_action.target:
-    #                 bonus += 100
-
-    #             if a.action_type == ActionType.SUPPORT and a.supported_unit == new_action.unit_location:
-    #                 if new_action.target != a.support_target: penalty -= 300
-
-    #         # Make sure no empty stuff
-    #         for sc in self.our_centres:
-    #             if sc not in targets:
-    #                 penalty -= 50
-
-
-    #     # Support or convoy matches a move in the set
-    #     if new_action.action_type == ActionType.SUPPORT or new_action.action_type == ActionType.CONVOY:
-    #         for a in action_list:
-    #             # If a is a move, and the support is for this unit to its target
-    #             if a.action_type == ActionType.MOVE and a.unit_location == new_action.supported_unit and a.target == new_action.support_target:
-    #                 if new_action.action_type == ActionType.CONVOY: # Trying to convoy a normal move
-    #                     if not a.via_convoy: penalty -= 300
-
-    #                     if not (self.map_graph_navy.has_edge(new_action.unit_location, a.unit_location) and self.map_graph_navy.has_edge(new_action.unit_location, a.target)):
-    #                         penalty -= 300
-    #                 else:
-    #                     bonus += 100
-    #             if a.action_type == ActionType.MOVE and a.unit_location == new_action.supported_unit:
-    #                 if a.target != new_action.support_target: penalty -= 300
-
-    #     randomness = random.uniform(-10, 10)
-
-    #     return bonus + penalty + randomness
     def synergy_bonus(self, action_list, new_action):
         bonus = 0.0
         penalty = 0.0
@@ -1045,7 +948,6 @@ class StudentAgent(Agent):
 
         return bonus + penalty + randomness
     
-    @timeout_decorator.timeout(1)
     def get_product(self, candidate_actions, unit_locations):
         BEAM_WIDTH = 100
 
@@ -1087,8 +989,6 @@ class StudentAgent(Agent):
             beams = top_beams + random_beams
 
         # after full expansion, evaluate full order sets
-        #for _, orders in beams:
-        #    print([x.order_string for x in orders])
         valid_beams = []
         for s, a in beams:
             if self.is_valid_order_set(a):
@@ -1101,13 +1001,9 @@ class StudentAgent(Agent):
 
         final = all_actions[:20]
 
-        # Get some randos in there too
-        #random_actions = random.sample(all_actions[20:100], min(10, len(all_actions) - 20))
-        #final.extend(random_actions)
-
         return final
     
-    @timeout_decorator.timeout(1)
+    ##@timeout_decorator.timeout(1)
     def get_joint_product(self, all_power_orders):
         AMOUNT = 20
 
@@ -1127,7 +1023,6 @@ class StudentAgent(Agent):
         return joint_assignments[:AMOUNT]
 
     # Get random one of two top moves per unit
-    @timeout_decorator.timeout(1)
     def get_likely_enemy_orders(self, game, power_name):
         possible_orders = game.get_all_possible_orders()
         orderable_locations = game.get_orderable_locations(power_name)
@@ -1160,7 +1055,6 @@ class StudentAgent(Agent):
 
         return power_orders
     
-    @timeout_decorator.timeout(1)
     def generate_supports(self, amount, unit_location, candidate_actions):
         all_orders = self.game.get_all_possible_orders()
         unit_orders = all_orders.get(unit_location, [])
@@ -1187,7 +1081,6 @@ class StudentAgent(Agent):
 
                     if unit_type == "F" and action.unit_type == "A": # Also generate a convoy for this move if we can help
                         if graph.has_edge(unit_location, action.unit_location) and graph.has_edge(unit_location, action.target):
-                            #print(f"{action.unit_location} and {unit_location} and {action.target} are connected.")
                             new = CandidateAction(
                                 unit_location = unit_location,
                                 unit_type = unit_type,
@@ -1223,7 +1116,6 @@ class StudentAgent(Agent):
             candidate_actions[unit].extend(new_candidates[unit][:amount])
             candidate_actions[unit].sort(key = lambda x: x.score, reverse=True)
     
-    @timeout_decorator.timeout(1)
     def generate_our_orders(self):
         CANDIDATE_ORDER_COUNT = 3
         candidate_actions = {}
@@ -1246,20 +1138,12 @@ class StudentAgent(Agent):
 
         order_sets = self.get_product(candidate_actions, unit_locations)
 
-        #order_sets.sort(key=lambda o: len(o), reverse=True)
-
-        # if len(order_sets) == 0:
-        #     pprint.pprint(candidate_actions)
-
         return order_sets
     
     # Generate order sets for all powers
-    @timeout_decorator.timeout(1)
+    ##@timeout_decorator.timeout(1)
     def generate_joint_order_sets(self):
         our_order_sets = self.generate_our_orders()
-
-        #print("Our orders:")
-
 
         enemy_order_sets = {}
         ENEMY_ORDER_SET_COUNT = 3
@@ -1277,50 +1161,35 @@ class StudentAgent(Agent):
 
         joint_order_sets = self.get_joint_product(all_power_order_sets)
 
-        #
-        #print(f"We have {len(our_order_sets)} orders")
-
-        # for order_set in our_order_sets:
-        #     #for p, orders in order_set.items():
-        #     print([x.order_string for x in order_set])
-
-            #quit()
-
-
         return joint_order_sets
 
     @timeout_decorator.timeout(1)
     def get_actions(self):
-        start = time.time_ns()
-        # Whats the game state
-        phase = self.game.get_current_phase()
+        self.root = None
 
-        self.calculate_map_properties()
+        try:
+            self.get_actions_timed()
+        except:
+            pass
 
-        # Get all possible orders
-        #print(f"Getting actions for phase {phase}")
-        now = time.time_ns()
-        order_sets = self.generate_joint_order_sets()
-        order_finish = time.time_ns()
-        #print(f"Took {round((order_finish - now)/1000000)}ms to generate {len(order_sets)} orders.")
-
-        safety = 50000 # Time to finish up in ns
-        cutoff_time = start + 1e9 - safety
-
-        best_order_set : dict = {}
-
-        if len(order_sets) == 0:
+        # pick the most visited child of the root
+        if not self.root or not self.root.children:
             return []
-        else:
-            best_orders = self.mcts_select_orders(order_sets, iterations=1000, rollout_depth=2, cutoff_time=cutoff_time)
-            best_order_set = best_orders[self.power_name]
+        best_orders = self.root.best_child().action
+        best_order_set = best_orders[self.power_name]
 
         best_order_set_strings = [x.order_string for x in best_order_set]
 
-        finish = time.time_ns()
-        #print(f"Took {round((finish - now)/1000000)}ms.")
-        #print(f"Finished phase {phase} with orders {best_order_set_strings}\n")
-
-        self.game.render(output_path='img.svg')
-
         return best_order_set_strings
+
+    @timeout_decorator.timeout(0.95)
+    def get_actions_timed(self):
+        self.calculate_map_properties()
+
+        # Get all possible orders
+        order_sets = self.generate_joint_order_sets()
+
+        if len(order_sets) == 0:
+            return
+        else:
+            self.start_mcts(order_sets, rollout_depth=2)
