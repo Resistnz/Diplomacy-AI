@@ -2,7 +2,7 @@ from test import *
 import cProfile
 
 AI_AGENT = "ITALY"
-OPPONENT_POOL = [GreedyAgent] #[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
+OPPONENT_POOL = [RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
 
 if __name__ == "__main__":
     agents = {}

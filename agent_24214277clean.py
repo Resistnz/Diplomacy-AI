@@ -15,7 +15,6 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional
 import math
-import cProfile
 
 class ActionType(Enum):
     HOLD = 1
@@ -110,7 +109,7 @@ class Game:
 
     def copy_game(game):
         return Game(
-            adjacency=game.adjacency,  # often immutable; safe to share
+            adjacency=game.adjacency,
             supply_centres_by_power={p: centres[:] for p, centres in game.supply_centres_by_power.items()},
             units={p: lst[:] for p, lst in game.units_by_power.items()},
             phase=game.phase
@@ -289,6 +288,9 @@ class StudentAgent(Agent):
         self.map_graph_army = None
         self.map_graph_navy = None
 
+        self.last_unit_position_by_power = defaultdict(list)
+        self.hold_counts = defaultdict(int)
+
     @timeout_decorator.timeout(1)
     def new_game(self, game, power_name):
         self.game = game
@@ -417,11 +419,24 @@ class StudentAgent(Agent):
 
         build_count = 0
 
+        convoy_move_targets = set()
+        convoy_targets = set()
+
         for action in order_set:
             if action.action_type == ActionType.MOVE:
-                if action.via_convoy: return False
+                if action.via_convoy: # There has to also be someone doing the convoying
+                    convoy_move_targets.add(action.target)
+
             elif action.action_type == ActionType.BUILD:
                 build_count += 1
+            elif action.action_type == ActionType.CONVOY:
+                convoy_targets.add(action.support_target)
+
+        for target in convoy_move_targets:
+            if target not in convoy_targets:
+                #print([x.order_string for x in order_set])
+                #quit()
+                return False
             
         if build_count < min(len(order_set), self.amount_to_build): return False
 
@@ -508,10 +523,39 @@ class StudentAgent(Agent):
         self.enemy_centres = self.occupied_centres - self.our_centres
         self.unoccupied_or_enemy_centres = self.unoccupied_centres.union(self.enemy_centres)
 
+        self.full_phase = self.game.get_current_phase()
+
         self.all_unit_locations = {}
         for power, units in self.game.get_units().items():
             for unit in units:
                 self.all_unit_locations[unit[2:5]] = (power, unit)
+
+            if power == self.power_name: continue
+
+            if not (self.full_phase[0] == "F" or self.full_phase[0] == "S") and self.full_phase[0] == "M": continue
+
+            # See if theres any difference since last time
+            old_spots = self.last_unit_position_by_power.get(power, set())
+            units_set = set(units)
+            fixed_set = set()
+
+            all_holding = True
+            for unit in units_set:
+                fixed_unit = unit
+
+                if unit[0] == "*": 
+                   fixed_unit = unit[1:]
+                
+                fixed_set.add(fixed_unit)
+
+                if fixed_unit not in old_spots: all_holding = False
+
+            if all_holding:
+                self.hold_counts[power] += 1
+            else:
+                self.hold_counts[power] = 0
+
+            self.last_unit_position_by_power[power] = fixed_set
 
         # Neighbours
         self.neighbours = self.game.map.loc_abut
@@ -541,7 +585,9 @@ class StudentAgent(Agent):
                 self.unit_string_by_location[u[2:5]] = u
 
             if power == self.power_name: continue
-            self.enemy_units.extend(units)
+            self.enemy_units.extend([u[2:5] for u in units])
+
+        self.enemy_units = set(self.enemy_units)
             
         # How many opps at each location
         self.opp_counts = defaultdict(int)
@@ -594,6 +640,7 @@ class StudentAgent(Agent):
                         queue.append((neigh, d + 1))
 
         self.locations_to_build_fleets = {"POR", "SPA", "NAP", "TUN", "BRE", "LON", "EDI", "LON", "SMY", "GRE", "ANK"}
+        self.locations_to_convoy = {"LON", "WAL", "EDI", "LVR", "CLY", "YOR"}
 
     @timeout_decorator.timeout(1)
     def distance_to_enemy(self, start_location):
@@ -674,45 +721,76 @@ class StudentAgent(Agent):
                 if unit_location in self.locations_to_build_fleets:
                     score = 200
             if action.build_type == "A":
-                if self.army_count > self.fleet_count + 3:
+                if self.army_count >= self.fleet_count + 2:
                     score = -300
                 
             # Put this guy where there are more opps
             score += 300 - self.distance_to_enemy(unit_location)*100
-        
+            score -= self.support_counts[action.unit_location]*100
+
         elif action_type == ActionType.CONVOY:
-            return -100
+            if support_target in self.unoccupied_or_enemy_centres: # Convoying a move into new centre 
+                score += 20 * season()
+            else: # Get tf out of england
+                if supported_unit in self.locations_to_convoy:
+                    score += 75
+                if target in self.locations_to_convoy:
+                    score += 30
         
         elif action_type == ActionType.WAIVE:
             return -100
         
         elif action_type == ActionType.RETREAT:            
-            return 0
+            return 100
+        
+        elif action_type == ActionType.DISBAND:
+            if unit_location in self.our_centres: score -= 200
+
+            score -= self.opp_counts[unit_location]*100
 
         elif action_type == ActionType.MOVE:
-            if target in self.unoccupied_centres: score += 50 * season() # New centre
+            if target in self.unoccupied_centres: 
+                score += 50 * season() # New centre
+                if action.unit_type == "F": score += 5
             elif target in self.enemy_centres: score += 50 * season() # Enemy centre
-            #elif target in self.our_centres: score += 5 # Defending our centre
 
             if unit_location in self.our_centres: # Leaving it empty
-                if self.opp_counts[unit_location] > 0: score -= 50 * season() # Opps around
+                #print("In a centre")
+                if self.opp_counts[unit_location] > 0: 
+                    #print("got opps")
+                    if target in self.unoccupied_or_enemy_centres:
+                        #print("grabbing new, is ok")
+                        score -= 30 * season() 
+                    else:
+                        score -= 1000 # Opps around
+            if target in self.our_centres and self.opp_counts[target] > 1:
+                score += 40
 
-            support_diff = self.opp_counts[target] - self.support_counts[target]
+            # Please move into empty spots
+            if target not in self.our_units:
+                score += 20
+            
+            support_count = self.support_counts[target]
+            if action.via_convoy: support_count -= 1
 
-            if support_diff <= -3:  # We stuck in our city
+            support_diff = self.opp_counts[target] - support_count
+
+            if support_diff <= -3:  # We stuck in our middle
                 score -= 200
-            else:
-                score += 50
 
             if action.unit_type == "F" and self.game.map.loc_type.get(target, None) == "WATER":
-                score += 30 # Move into some water
+                # Move next to other fleets
+                for n in self.neighbours[target]:
+                    if self.unit_string_by_location.get(n, "A")[0] == "F": score += 50
+
+                score += 20 # Move into some water
 
             # Attacking an enemy
             if self.all_unit_locations.get(target, (self.power_name, False))[0] != self.power_name:
-                if self.support_counts[target] > 1: 
-                    score += 20 # Be more aggressive
+                if support_count > 1: 
+                    score += 50 * support_count # Be more aggressive
                 else:
-                    score -= 40
+                    score -= 100
             
             # Check the proximity to other supply centres
             proximity = 0
@@ -723,7 +801,7 @@ class StudentAgent(Agent):
                     proximity += max(0, 3 - d)
             score += proximity
             
-            # Move closer to enemy
+            # Don't move away from enemy
             if self.distance_to_enemy(target) > self.distance_to_enemy(unit_location):
                 score -= 20
 
@@ -755,14 +833,13 @@ class StudentAgent(Agent):
 
                         if support_diff <= -2:  # We stuck in our city
                             score -= 100
-                        else:
-                            score += 20
 
                 elif supported_unit in self.unoccupied_or_enemy_centres: # Supporting a new hold
                     score += 50
                 else:
                     score += 5
         
+        #(action.order_string, score)
         return score
     
     @timeout_decorator.timeout(1)
@@ -809,10 +886,17 @@ class StudentAgent(Agent):
             action = StudentAgent.parse_order(order)
 
             # Skip supports for now
-            if action.action_type == ActionType.SUPPORT: continue
+            if action.action_type == ActionType.SUPPORT or action.action_type == ActionType.CONVOY: continue
 
-            # Skip convoys too
-            if action.via_convoy: continue
+            # Make sure we can actually perform the convoy - limit to length of 1 (unfortunately)
+            if action.via_convoy: 
+                valid_convoy = False
+                for neighbour in self.neighbours[action.unit_location]: # CHeck neighbours
+                    if self.unit_string_by_location.get(neighbour, "A")[0] == "F": # If fleet, check its neighbpours
+                        if action.support_target in self.neighbours[action.unit_location]: # If target, we good
+                            valid_convoy = True
+                
+                if not valid_convoy: continue
 
             # Make sure it actually is us and not the enemy
             if action.action_type == ActionType.RETREAT or action.action_type == ActionType.DISBAND:
@@ -833,7 +917,7 @@ class StudentAgent(Agent):
         # Using dictionary to weight different properties
         propertyWeightings = {
             "our_centres": 50,
-            "enemy_centres_lead": 5,
+            "enemy_centres_lead": 20,
             "next_turn_centres": 20
         }
 
@@ -879,6 +963,56 @@ class StudentAgent(Agent):
         return evaluation
     
     @timeout_decorator.timeout(1)
+    # def synergy_bonus(self, action_list, new_action):
+    #     bonus = 0.0
+    #     penalty = 0.0
+
+    #     targets = set()
+
+    #     # Self bounce
+    #     if new_action.action_type == ActionType.MOVE:
+    #         for a in action_list:
+    #             if a.action_type == ActionType.MOVE:
+    #                 targets.add(a.target)
+
+    #                 if a.target == new_action.target:
+    #                     # Conflict: two units moving to the same place
+    #                     penalty -= 100
+    #             else:
+    #                 targets.add(a.unit_location)
+    #             if (a.action_type == ActionType.HOLD or a.action_type == ActionType.SUPPORT) and a.unit_location == new_action.target:
+    #                 penalty -= 100
+
+    #             if (a.action_type == ActionType.SUPPORT or a.action_type == ActionType.CONVOY) and a.supported_unit == new_action.unit_location and a.support_target == new_action.target:
+    #                 bonus += 100
+
+    #             if a.action_type == ActionType.SUPPORT and a.supported_unit == new_action.unit_location:
+    #                 if new_action.target != a.support_target: penalty -= 300
+
+    #         # Make sure no empty stuff
+    #         for sc in self.our_centres:
+    #             if sc not in targets:
+    #                 penalty -= 50
+
+
+    #     # Support or convoy matches a move in the set
+    #     if new_action.action_type == ActionType.SUPPORT or new_action.action_type == ActionType.CONVOY:
+    #         for a in action_list:
+    #             # If a is a move, and the support is for this unit to its target
+    #             if a.action_type == ActionType.MOVE and a.unit_location == new_action.supported_unit and a.target == new_action.support_target:
+    #                 if new_action.action_type == ActionType.CONVOY: # Trying to convoy a normal move
+    #                     if not a.via_convoy: penalty -= 300
+
+    #                     if not (self.map_graph_navy.has_edge(new_action.unit_location, a.unit_location) and self.map_graph_navy.has_edge(new_action.unit_location, a.target)):
+    #                         penalty -= 300
+    #                 else:
+    #                     bonus += 100
+    #             if a.action_type == ActionType.MOVE and a.unit_location == new_action.supported_unit:
+    #                 if a.target != new_action.support_target: penalty -= 300
+
+    #     randomness = random.uniform(-10, 10)
+
+    #     return bonus + penalty + randomness
     def synergy_bonus(self, action_list, new_action):
         bonus = 0.0
         penalty = 0.0
@@ -887,11 +1021,11 @@ class StudentAgent(Agent):
         if new_action.action_type == ActionType.MOVE:
             for a in action_list:
                 if a.action_type == ActionType.MOVE and a.target == new_action.target:
-                    # Conflict: two units moving to the same place
+                    # Conflict two units moving to the same place
                     penalty -= 100.
 
-        # --- Check synergies: support matches a move in the set ---
-        if new_action.action_type == ActionType.SUPPORT:
+        #Check synergies support matches a move in the set
+        if new_action.action_type == ActionType.SUPPORT or new_action.action_type == ActionType.CONVOY:
             for a in action_list:
                 # If a is a move, and the support is for this unit to its target
                 if (a.action_type == ActionType.MOVE and
@@ -899,10 +1033,10 @@ class StudentAgent(Agent):
                     a.target == new_action.support_target):
                     bonus += 100
 
-        # --- Also check the reverse: if new_action is a move, existing support actions match it ---
+        #Also check the reverse
         if new_action.action_type == ActionType.MOVE:
             for a in action_list:
-                if (a.action_type == ActionType.SUPPORT and
+                if ((a.action_type == ActionType.SUPPORT or a.action_type == ActionType.CONVOY) and
                     a.supported_unit == new_action.unit_location and
                     a.support_target == new_action.target):
                     bonus += 100
@@ -918,6 +1052,16 @@ class StudentAgent(Agent):
         # Skipping empty guys
         candidate_actions_no_empty = {k: v for k, v in candidate_actions.items() if v}
         unit_locations_fixed = [u for u in unit_locations if u in candidate_actions_no_empty]
+
+        # Sort unit_locations_fixed by the highest scored action associated with each location
+        unit_locations_fixed.sort(
+            key=lambda loc: (
+            max(candidate_actions[loc], key=lambda action: action.score).score -
+            (sorted(candidate_actions[loc], key=lambda action: action.score, reverse=True)[1].score 
+             if len(candidate_actions[loc]) > 1 else float('-inf'))
+            ),
+            reverse=True
+        )
 
         beams = [(0, [])]  # (score, [actions])
 
@@ -943,6 +1087,8 @@ class StudentAgent(Agent):
             beams = top_beams + random_beams
 
         # after full expansion, evaluate full order sets
+        #for _, orders in beams:
+        #    print([x.order_string for x in orders])
         valid_beams = []
         for s, a in beams:
             if self.is_valid_order_set(a):
@@ -980,14 +1126,6 @@ class StudentAgent(Agent):
 
         return joint_assignments[:AMOUNT]
 
-    # Get 1 random order for each unit
-    @timeout_decorator.timeout(1)
-    def get_random_orders(self, game, power_name):
-        by_loc = game.get_all_possible_orders()
-        orderable_locations = self.game.get_orderable_locations(power_name)
-
-        return  [StudentAgent.parse_order(random.choice(by_loc[location])) for location in orderable_locations if by_loc.get(location, None)]
-    
     # Get random one of two top moves per unit
     @timeout_decorator.timeout(1)
     def get_likely_enemy_orders(self, game, power_name):
@@ -1003,6 +1141,11 @@ class StudentAgent(Agent):
 
             for action in possible_orders[location]:
                 parsed = StudentAgent.parse_order(action)
+
+                # If they just gonna hold
+                if self.hold_counts.get(power_name, 0) >= 3:
+                    if parsed.action_type != ActionType.HOLD: continue
+
                 score = self.fast_action_evaluation(game, parsed,power_name)
 
                 orders_at_location.append((score, parsed))
@@ -1039,9 +1182,28 @@ class StudentAgent(Agent):
                 # Build a support if we can reach
                 if action.action_type != ActionType.MOVE: continue
 
+                if action.via_convoy:
+                    order_string = order_string[:-4] # Remove the VIA at the end of the order
+
+                    if unit_type == "F" and action.unit_type == "A": # Also generate a convoy for this move if we can help
+                        if graph.has_edge(unit_location, action.unit_location) and graph.has_edge(unit_location, action.target):
+                            #print(f"{action.unit_location} and {unit_location} and {action.target} are connected.")
+                            new = CandidateAction(
+                                unit_location = unit_location,
+                                unit_type = unit_type,
+                                order_string = f"{unit_type} {unit_location} C {action.order_string[:-4]}",
+
+                                action_type = ActionType.CONVOY,
+                                supported_unit = other_unit,
+                                support_target = action.target
+                            )
+
+                            new.score = self.evaluate_candidate_action(new)
+
+                            new_candidates[unit_location].append(new)
+
                 # Make sure fleet can reach it
                 if graph.has_edge(unit_location, action.target):
-
                     new = CandidateAction(
                         unit_location = unit_location,
                         unit_type = unit_type,
@@ -1084,7 +1246,10 @@ class StudentAgent(Agent):
 
         order_sets = self.get_product(candidate_actions, unit_locations)
 
-        order_sets.sort(key=lambda o: len(o), reverse=True)
+        #order_sets.sort(key=lambda o: len(o), reverse=True)
+
+        # if len(order_sets) == 0:
+        #     pprint.pprint(candidate_actions)
 
         return order_sets
     
@@ -1094,10 +1259,7 @@ class StudentAgent(Agent):
         our_order_sets = self.generate_our_orders()
 
         #print("Our orders:")
-        #for order_set in our_order_sets:
-            #for p, orders in order_set.items():
-            #    print([x.order_string for x in orders])
-           # print([x.order_string for x in order_set])
+
 
         enemy_order_sets = {}
         ENEMY_ORDER_SET_COUNT = 3
@@ -1114,6 +1276,16 @@ class StudentAgent(Agent):
         all_power_order_sets[self.power_name] = our_order_sets
 
         joint_order_sets = self.get_joint_product(all_power_order_sets)
+
+        #
+        #print(f"We have {len(our_order_sets)} orders")
+
+        # for order_set in our_order_sets:
+        #     #for p, orders in order_set.items():
+        #     print([x.order_string for x in order_set])
+
+            #quit()
+
 
         return joint_order_sets
 
@@ -1132,11 +1304,6 @@ class StudentAgent(Agent):
         order_finish = time.time_ns()
         #print(f"Took {round((order_finish - now)/1000000)}ms to generate {len(order_sets)} orders.")
 
-        #for order_set in order_sets:
-            #for p, orders in order_set.items():
-            #    print([x.order_string for x in orders])
-        #    print([x.order_string for x in order_set[self.power_name]])
-
         safety = 50000 # Time to finish up in ns
         cutoff_time = start + 1e9 - safety
 
@@ -1145,7 +1312,7 @@ class StudentAgent(Agent):
         if len(order_sets) == 0:
             return []
         else:
-            best_orders = self.mcts_select_orders(order_sets, iterations=1000, rollout_depth=3, cutoff_time=cutoff_time)
+            best_orders = self.mcts_select_orders(order_sets, iterations=1000, rollout_depth=2, cutoff_time=cutoff_time)
             best_order_set = best_orders[self.power_name]
 
         best_order_set_strings = [x.order_string for x in best_order_set]
