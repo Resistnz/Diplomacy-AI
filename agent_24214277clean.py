@@ -4,11 +4,8 @@ import random
 import networkx as nx
 import timeout_decorator
 from agent_baselines import Agent
-import pprint
 from itertools import product
 from tqdm import tqdm
-import time
-import heapq
 from functools import cache
 from enum import Enum
 from collections import defaultdict, deque
@@ -49,8 +46,6 @@ class MCTSNode:
 # Used to generate some candidate actions to search through
 @dataclass
 class CandidateAction():
-    #unit: Unit
-
     unit_location: str 
     unit_type: str
     order_string: str
@@ -602,8 +597,9 @@ class StudentAgent(Agent):
                         seen.add(neigh)
                         queue.append((neigh, d + 1))
 
-        self.locations_to_build_fleets = {"POR", "SPA", "NAP", "TUN", "BRE", "LON", "EDI", "LON", "SMY", "GRE", "ANK"}
-        self.locations_to_convoy = {"LON", "WAL", "EDI", "LVR", "CLY", "YOR"}
+        self.locations_to_build_fleets = {"POR", "SPA", "NAP", "TUN", "BRE", "SMY", "GRE", "ANK", "EDI", "LVR"}
+        self.locations_to_convoy = {"LON", "WAL", "EDI", "CLY"}
+        self.not_in_england = {"PIC", "BEL", "HOL", "NWY", "BRE"}
 
     def distance_to_enemy(self, start_location):
         visited = set()
@@ -692,10 +688,10 @@ class StudentAgent(Agent):
             if support_target in self.unoccupied_or_enemy_centres: # Convoying a move into new centre 
                 score += 20 * season()
             else: # Get tf out of england
-                if supported_unit in self.locations_to_convoy:
-                    score += 75
-                if target in self.locations_to_convoy:
-                    score += 30
+                if supported_unit in self.locations_to_convoy or unit_location in self.locations_to_convoy:
+                    score += 200
+                if target in self.not_in_england:
+                    score += 100
         
         elif action_type == ActionType.WAIVE:
             return -100
@@ -728,7 +724,14 @@ class StudentAgent(Agent):
                 score += 20
             
             support_count = self.support_counts[target]
-            if action.via_convoy: support_count -= 1
+            if action.via_convoy: 
+                if self.map_graph_army.has_edge(unit_location, target): # Bro just walk
+                    score -= 1000
+
+                elif unit_location in self.locations_to_convoy and target in self.not_in_england:
+                    score += 200
+
+                support_count -= 1
 
             support_diff = self.opp_counts[target] - support_count
 
@@ -770,7 +773,6 @@ class StudentAgent(Agent):
             else: # Grabbing a new centre is always good
                 if unit_location in self.unoccupied_or_enemy_centres:
                     score += 100
-                    #print("grabbing new one!")
                 else:
                     score += self.opp_counts[unit_location]*10
 
@@ -812,6 +814,9 @@ class StudentAgent(Agent):
                     support_target_counts[action.supported_unit] += 1
 
             if action.action_type == ActionType.MOVE:
+                if action.target in move_targets: 
+                    score -= 300
+
                 move_targets.add(action.target)
 
         for target, count in support_target_counts.items():
@@ -825,6 +830,8 @@ class StudentAgent(Agent):
                     score -= 30
             
         score += sum([x.score for x in order_set])
+
+        #print((score, [x.order_string for x in order_set]))
 
         return score
     
@@ -841,16 +848,16 @@ class StudentAgent(Agent):
             action = StudentAgent.parse_order(order)
 
             # Skip supports for now
-            if action.action_type == ActionType.SUPPORT or action.action_type == ActionType.CONVOY: continue
+            if action.action_type == ActionType.SUPPORT: continue
 
             # Make sure we can actually perform the convoy - limit to length of 1 (unfortunately)
             if action.via_convoy: 
                 valid_convoy = False
                 for neighbour in self.neighbours[action.unit_location]: # CHeck neighbours
                     if self.unit_string_by_location.get(neighbour, "A")[0] == "F": # If fleet, check its neighbpours
-                        if action.support_target in self.neighbours[action.unit_location]: # If target, we good
+                        if action.target in self.neighbours[neighbour]: # If target, we good
                             valid_convoy = True
-                
+
                 if not valid_convoy: continue
 
             # Make sure it actually is us and not the enemy
@@ -917,15 +924,15 @@ class StudentAgent(Agent):
         return evaluation
 
     def synergy_bonus(self, action_list, new_action):
-        bonus = 0.0
-        penalty = 0.0
+        bonus = 0
+        penalty = 0
 
         # Self bounce
         if new_action.action_type == ActionType.MOVE:
             for a in action_list:
                 if a.action_type == ActionType.MOVE and a.target == new_action.target:
-                    # Conflict two units moving to the same place
-                    penalty -= 100.
+                    # Conflict two units moving to the same place gonna self bounce
+                    penalty -= 300
 
         #Check synergies support matches a move in the set
         if new_action.action_type == ActionType.SUPPORT or new_action.action_type == ActionType.CONVOY:
@@ -1079,7 +1086,7 @@ class StudentAgent(Agent):
                 if action.via_convoy:
                     order_string = order_string[:-4] # Remove the VIA at the end of the order
 
-                    if unit_type == "F" and action.unit_type == "A": # Also generate a convoy for this move if we can help
+                    if unit_type == "F" and action.unit_type == "A" and self.game.map.loc_type.get(unit_location, None) == "WATER": # Also generate a convoy for this move if we can help
                         if graph.has_edge(unit_location, action.unit_location) and graph.has_edge(unit_location, action.target):
                             new = CandidateAction(
                                 unit_location = unit_location,
@@ -1169,7 +1176,7 @@ class StudentAgent(Agent):
 
         try:
             self.get_actions_timed()
-        except:
+        except timeout_decorator.TimeoutError:
             pass
 
         # pick the most visited child of the root
@@ -1179,6 +1186,8 @@ class StudentAgent(Agent):
         best_order_set = best_orders[self.power_name]
 
         best_order_set_strings = [x.order_string for x in best_order_set]
+
+        self.game.render(output_path='img.svg')
 
         return best_order_set_strings
 
