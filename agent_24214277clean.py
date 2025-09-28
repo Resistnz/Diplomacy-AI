@@ -1179,7 +1179,7 @@ class StudentAgent(Agent):
         except timeout_decorator.TimeoutError:
             pass
 
-        # pick the most visited child of the root
+        # Pick the most visited child of the root
         if not self.root or not self.root.children:
             return []
         best_orders = self.root.best_child().action
@@ -1187,7 +1187,7 @@ class StudentAgent(Agent):
 
         best_order_set_strings = [x.order_string for x in best_order_set]
 
-        self.game.render(output_path='img.svg')
+        #self.game.render(output_path='img.svg')
 
         return best_order_set_strings
 

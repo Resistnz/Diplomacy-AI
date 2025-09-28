@@ -1,8 +1,8 @@
 from test import *
 import cProfile
 
-AI_AGENT = "ENGLAND"
-OPPONENT_POOL = [StaticAgent] #[RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
+AI_AGENT = "ITALY"
+OPPONENT_POOL = [RandomAgent, AttitudeAgent, AttitudeAgent, GreedyAgent, GreedyAgent]
 
 if __name__ == "__main__":
     agents = {}
