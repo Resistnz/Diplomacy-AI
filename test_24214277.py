@@ -1,4 +1,5 @@
-# Github link
+# https://github.com/Resistnz/Diplomacy-AI
+
 """
 Scenario 1:
 ----- The Per-Power and the Overall Performance of the Player Agent -----
@@ -14,14 +15,14 @@ ALL: SCs - 17.19±1.87, Wins - 80.95%, Survives - 19.05%, Defeats - 0.0%
 
 Scenario 2:
 ----- The Per-Power and the Overall Performance of the Player Agent -----
-AUSTRIA: SCs - 5.0±5.72, Wins - 0.0%, Survives - 66.67%, Defeats - 33.33%
-ENGLAND: SCs - 7.0±0.82, Wins - 0.0%, Survives - 100.0%, Defeats - 0.0%
-FRANCE: SCs - 8.0±7.48, Wins - 33.33%, Survives - 33.33%, Defeats - 33.33%
-GERMANY: SCs - 10.0±6.16, Wins - 33.33%, Survives - 66.67%, Defeats - 0.0%
-ITALY: SCs - 6.33±4.03, Wins - 0.0%, Survives - 100.0%, Defeats - 0.0%
-RUSSIA: SCs - 17.33±0.94, Wins - 66.67%, Survives - 33.33%, Defeats - 0.0%
-TURKEY: SCs - 13.33±3.4, Wins - 33.33%, Survives - 66.67%, Defeats - 0.0%
-ALL: SCs - 9.57±6.22, Wins - 23.81%, Survives - 66.67%, Defeats - 9.52%
+AUSTRIA: SCs - 12.0±8.49, Wins - 66.67%, Survives - 0.0%, Defeats - 33.33%
+ENGLAND: SCs - 9.67±6.94, Wins - 0.0%, Survives - 66.67%, Defeats - 33.33%
+FRANCE: SCs - 16.0±1.63, Wins - 33.33%, Survives - 66.67%, Defeats - 0.0%
+GERMANY: SCs - 15.0±4.24, Wins - 66.67%, Survives - 33.33%, Defeats - 0.0%
+ITALY: SCs - 13.0±4.55, Wins - 33.33%, Survives - 66.67%, Defeats - 0.0%
+RUSSIA: SCs - 16.67±1.89, Wins - 66.67%, Survives - 33.33%, Defeats - 0.0%
+TURKEY: SCs - 10.0±0.82, Wins - 0.0%, Survives - 100.0%, Defeats - 0.0%
+ALL: SCs - 13.19±5.52, Wins - 38.1%, Survives - 52.38%, Defeats - 9.52%
 -------------------------------------------------------------------------
 """
 
