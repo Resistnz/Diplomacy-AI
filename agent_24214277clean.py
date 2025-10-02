@@ -319,7 +319,7 @@ class StudentAgent(Agent):
         root_game = Game(adjacency, supply_centres_by_power, units, phase)
         self.root = MCTSNode(root_game)
 
-        # Seed root children with top joint order sets
+        # give children the top order sets
         for joint_orders in top_order_sets:
             child_game = Game(adjacency, supply_centres_by_power, units, phase)
             child_game.resolve_orders(joint_orders)
@@ -330,6 +330,7 @@ class StudentAgent(Agent):
         # Will timeout automatically
         while True:
             node = self.mcts_selection(self.root)
+
             if node.visits == 0:
                 reward = self.mcts_rollout(node.game_state, depth=rollout_depth)
                 self.mcts_backpropagate(node, reward)
@@ -360,16 +361,16 @@ class StudentAgent(Agent):
     def mcts_rollout(self, game_state, depth):
         rollout_game = game_state.copy_game()
         for _ in range(depth):
-            # Add random orders for all powers
+            # Add heuristic based orders for all powers
             all_orders = {}
             for power in self.game.powers.keys():
                 all_orders[power] = self.get_likely_enemy_orders(rollout_game, power)
 
             rollout_game.resolve_orders(all_orders)
 
-        # evaluate: sum of candidate action scores
+        # evaluate the game state
         evaluation = self.eval(game_state)
-        return evaluation  # crude but works; can combine with evaluate_partial_order_set
+        return evaluation  # it  works
 
     def mcts_backpropagate(self, node, reward):
         while node is not None:
