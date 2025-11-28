@@ -1,5 +1,11 @@
 # CITS3011 Intelligent Agent Project
 
+This was a project that I completed for university to create a bot to play the game Diplomacy. The report on the project can be found as `report_24214277.pdf`. Unfortunately, due to the complexity of the game and lack of relevance to any of the actual material we learned in the course, all of the cool AI features I had researched such as hierarchical task networks and goal based planning were infeasible to implement within the project timeline, but perhaps I will one day revisit them. 
+
+Below is the task description:
+
+# Task Description
+
 This project is to be completed individually.
 
 This project is marked out of a total of 40 marks and is worth 40% of your unit mark.
